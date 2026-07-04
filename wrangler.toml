@@ -1,0 +1,11 @@
+name = "de-groshi-bot"
+main = "src/index.js"
+compatibility_date = "2026-06-24"
+
+[triggers]
+crons = ["0 7 * * *", "0 17 * * SUN"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "de-groshi-db"
+database_id = "430f84df-d4a8-46d5-9ca0-31b3ba84ad1b"
