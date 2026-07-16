@@ -151,15 +151,35 @@ export default {
     if (request.method !== "POST" || url.pathname !== "/webhook") {
       return new Response("Not found", { status: 404 });
     }
-    if (env.WEBHOOK_SECRET) {
-      const token = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
-      if (token !== env.WEBHOOK_SECRET) {
-        return new Response("Forbidden", { status: 403 });
-      }
+    // Fail-closed: без налаштованого секрета webhook не приймає нічого,
+    // інакше будь-хто може підробити update із from.id адміна.
+    if (!env.WEBHOOK_SECRET) {
+      console.log("[WEBHOOK] WEBHOOK_SECRET не заданий — запит відхилено");
+      return new Response("Forbidden", { status: 403 });
+    }
+    const token = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
+    if (token !== env.WEBHOOK_SECRET) {
+      return new Response("Forbidden", { status: 403 });
     }
 
-    const update = await request.json();
-    await handleUpdate(update, env);
+    // Завжди відповідаємо 200: на не-2xx Telegram повторює той самий update,
+    // і частково оброблене повідомлення вставляється вдруге.
+    let update;
+    try {
+      update = await request.json();
+    } catch (error) {
+      console.log("[WEBHOOK_ERROR]", { action: "parse_body", error: String(error) });
+      return json({ ok: true });
+    }
+    try {
+      if (update?.update_id && !(await claimUpdate(env.DB, update.update_id))) {
+        console.log("[WEBHOOK]", { skip: "duplicate", update_id: update.update_id });
+        return json({ ok: true });
+      }
+      await handleUpdate(update, env);
+    } catch (error) {
+      console.log("[WEBHOOK_ERROR]", { update_id: update?.update_id, error: String(error) });
+    }
     return json({ ok: true });
   },
 
@@ -170,11 +190,37 @@ export default {
       return;
     }
     await sendAccessReminders(env);
+    await cleanupProcessedUpdates(env.DB);
+    await cleanupPendingExpenses(env.DB);
     if (kyivNow().date.slice(8, 10) === "01") {
       await sendMonthlyReports(env);
     }
   }
 };
+
+// true — update ще не оброблявся і його щойно "захоплено"; false — дубль від retry.
+async function claimUpdate(db, updateId) {
+  try {
+    const result = await db.prepare(
+      "INSERT OR IGNORE INTO processed_updates (update_id, processed_at) VALUES (?, ?)"
+    ).bind(updateId, kyivNow().datetime).run();
+    return Number(result.meta?.changes || 0) > 0;
+  } catch (error) {
+    // Таблиці може ще не бути (міграцію не застосовано) — тоді не блокуємо обробку.
+    console.log("[WEBHOOK_ERROR]", { action: "claim_update", error: String(error) });
+    return true;
+  }
+}
+
+// Telegram повторює доставку лічені хвилини, тож 2 днів історії достатньо.
+async function cleanupProcessedUpdates(db) {
+  try {
+    const cutoff = `${formatDate(addDays(parseDate(kyivNow().date), -2))} 00:00:00`;
+    await db.prepare("DELETE FROM processed_updates WHERE processed_at < ?").bind(cutoff).run();
+  } catch (error) {
+    console.log("[CRON_ERROR]", { action: "cleanup_processed_updates", error: String(error) });
+  }
+}
 
 async function handleUpdate(update, env) {
   if (update.message) {
@@ -469,14 +515,19 @@ async function handleCallback(callback, env) {
     return;
   }
 
-  if (data === "type_choice:planned" || data === "type_choice:emotional") {
-    const state = await getState(env.DB, userId);
-    if (state?.state !== "pending_type") {
+  if (data.startsWith("type_choice:")) {
+    const [, expenseType, pendingIdText] = data.split(":");
+    const pendingId = Number(pendingIdText);
+    // Старі картки без id у callback_data теж потрапляють сюди — для них pendingId = NaN.
+    if (!["planned", "emotional"].includes(expenseType) || !pendingId) {
       await editMessage(env, chatId, messageId, "Це повідомлення застаріло. Напиши витрату ще раз 👇");
       return;
     }
-    const expenseType = data.split(":")[1];
-    const pending = state.data;
+    const pending = await claimPendingExpense(env.DB, userId, pendingId);
+    if (!pending) {
+      await editMessage(env, chatId, messageId, "Це повідомлення застаріло. Напиши витрату ще раз 👇");
+      return;
+    }
     const expenseId = await insertExpense(env.DB, {
       user_id: userId,
       chat_id: chatId,
@@ -484,9 +535,8 @@ async function handleCallback(callback, env) {
       amount: pending.amount,
       category: pending.category,
       expense_type: expenseType,
-      expense_date: pending.date
+      expense_date: pending.expense_date
     });
-    await clearState(env.DB, userId);
     const expense = await getExpenseById(env.DB, userId, expenseId);
     const budget = await budgetWarning(env.DB, userId, expense.expense_date);
     await editMessage(env, chatId, messageId, expenseCardText(expense, budget), expenseCardKeyboard(expense));
@@ -821,11 +871,20 @@ async function handleAmountInput(env, chatId, userId, text, data) {
   });
 }
 
-// Показує картку витрати одразу з двома кнопками "Планова"/"Емоційна" —
-// користувач обирає тип напряму, без проміжного стану "за замовчуванням планова".
+// Показує картку витрати одразу з двома кнопками "Планова"/"Емоційна".
+// Кожна очікувана витрата — окремий рядок у pending_expenses, а її id вшитий у
+// callback_data: кілька карток поспіль не затирають одна одну, як це було зі станом.
 async function askExpenseType(env, chatId, userId, data) {
   const category = data.category || await detectCategorySmart(env.DB, userId, data.expense_title);
-  await setState(env.DB, userId, "pending_type", { ...data, category });
+  await clearState(env.DB, userId);
+  const pendingId = await insertPendingExpense(env.DB, {
+    user_id: userId,
+    chat_id: chatId,
+    expense_title: data.expense_title,
+    amount: data.amount,
+    category,
+    expense_date: data.date || null
+  });
   const dateLabel = data.date ? ` • 📅 ${formatShortDate(parseDate(data.date))}` : "";
   const text = [
     `💸 ${capitalize(data.expense_title)} — ${formatAmount(data.amount)} ${CURRENCY}`,
@@ -835,10 +894,49 @@ async function askExpenseType(env, chatId, userId, data) {
   ].join("\n");
   await sendMessage(env, chatId, text, {
     inline_keyboard: [[
-      { text: "📌 Планова", callback_data: "type_choice:planned" },
-      { text: "🔥 Емоційна", callback_data: "type_choice:emotional" }
+      { text: "📌 Планова", callback_data: `type_choice:planned:${pendingId}` },
+      { text: "🔥 Емоційна", callback_data: `type_choice:emotional:${pendingId}` }
     ]]
   }, true);
+}
+
+async function insertPendingExpense(db, pending) {
+  const result = await db.prepare(
+    `INSERT INTO pending_expenses (user_id, chat_id, expense_title, amount, category, expense_date, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    pending.user_id,
+    pending.chat_id,
+    pending.expense_title,
+    Number(pending.amount),
+    pending.category,
+    pending.expense_date,
+    kyivNow().datetime
+  ).run();
+  return Number(result.meta?.last_row_id || 0);
+}
+
+// Атомарне захоплення: з двох конкурентних тапів по кнопках картки DELETE
+// пройде (changes=1) лише в одного — другий отримає null і "застаріло".
+async function claimPendingExpense(db, userId, pendingId) {
+  const row = await db.prepare(
+    `SELECT id, expense_title, amount, category, expense_date
+     FROM pending_expenses
+     WHERE id = ? AND user_id = ?`
+  ).bind(pendingId, userId).first();
+  if (!row) return null;
+  const result = await db.prepare("DELETE FROM pending_expenses WHERE id = ?").bind(pendingId).run();
+  if (Number(result.meta?.changes || 0) === 0) return null;
+  return row;
+}
+
+async function cleanupPendingExpenses(db) {
+  try {
+    const cutoff = `${formatDate(addDays(parseDate(kyivNow().date), -7))} 00:00:00`;
+    await db.prepare("DELETE FROM pending_expenses WHERE created_at < ?").bind(cutoff).run();
+  } catch (error) {
+    console.log("[CRON_ERROR]", { action: "cleanup_pending_expenses", error: String(error) });
+  }
 }
 
 async function handleBudgetInput(env, chatId, userId, text) {
