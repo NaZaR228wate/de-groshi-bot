@@ -8,6 +8,7 @@ const MAIN_KEYBOARD = {
     [{ text: "✏️ Керувати витратами" }]
   ],
   resize_keyboard: true,
+  is_persistent: true,
   input_field_placeholder: "Введи витрату або обери дію…"
 };
 // Reply-клавіатура ніколи не підміняється: всі промпти вводу лишають MAIN_KEYBOARD,
@@ -287,7 +288,8 @@ async function handleMessage(message, env) {
 
   if (text === "⬅️ Назад") {
     await clearState(env.DB, userId);
-    await sendMessage(env, chatId, "Обери дію 👇", MAIN_KEYBOARD, true);
+    // Клавіатура persistent і так внизу — просто прибираємо службове, без нового повідомлення.
+    await deleteServiceMessage(env, userId);
     return;
   }
 
@@ -295,7 +297,7 @@ async function handleMessage(message, env) {
     await clearState(env.DB, userId);
     // Повна інструкція — лише тим, хто ще нічого не записав; решті короткий рядок.
     const experienced = await userHasExpenses(env.DB, userId);
-    await sendMessage(env, chatId, experienced ? ADD_EXPENSE_SHORT_HINT : ADD_EXPENSE_HINT, addExpenseHelpKeyboard(experienced), true);
+    await sendServiceMessage(env, chatId, userId, experienced ? ADD_EXPENSE_SHORT_HINT : ADD_EXPENSE_HINT, addExpenseHelpKeyboard(experienced));
     return;
   }
 
@@ -307,19 +309,19 @@ async function handleMessage(message, env) {
 
   if (text === "📊 Статистика") {
     await clearState(env.DB, userId);
-    await sendMessage(env, chatId, "Обери період статистики:", statsKeyboard(), true);
+    await sendServiceMessage(env, chatId, userId, "Обери період статистики:", statsKeyboard());
     return;
   }
 
   if (text === "📅 Обрати період") {
     await setState(env.DB, userId, WAITING_FOR_STATS_PERIOD, {});
-    await sendMessage(env, chatId, STATS_PERIOD_PROMPT, statsPeriodInputKeyboard(), true);
+    await sendServiceMessage(env, chatId, userId, STATS_PERIOD_PROMPT, statsPeriodInputKeyboard());
     return;
   }
 
   if (text === "✏️ Керувати витратами") {
     await clearState(env.DB, userId);
-    await sendMessage(env, chatId, manageExpensesText(), manageExpensesKeyboard(), true);
+    await sendServiceMessage(env, chatId, userId, manageExpensesText(), manageExpensesKeyboard());
     return;
   }
 
@@ -487,6 +489,7 @@ async function handleCallback(callback, env) {
   if (data === "stats_main_back") {
     await clearState(env.DB, userId);
     await deleteMessage(env, chatId, messageId);
+    await forgetServiceMessage(env.DB, userId, messageId);
     return;
   }
 
@@ -807,24 +810,24 @@ async function adminBlockedText(db) {
 async function handleManualExpenseInput(env, chatId, userId, text) {
   const { date, items } = parseExpensesMessage(text);
   if (!items.length) {
-    await sendMessage(env, chatId, "Не зрозумів 🤔 Напиши: назва і сума, наприклад: кава 80", examplesKeyboard(), true);
+    await sendServiceMessage(env, chatId, userId, "Не зрозумів 🤔 Напиши: назва і сума, наприклад: кава 80", examplesKeyboard());
     return;
   }
 
   if (items.length === 1) {
     const parsed = items[0];
     if (!parsed || (!parsed.title && !parsed.amount)) {
-      await sendMessage(env, chatId, "Не зрозумів 🤔 Напиши: назва і сума, наприклад: кава 80", examplesKeyboard(), true);
+      await sendServiceMessage(env, chatId, userId, "Не зрозумів 🤔 Напиши: назва і сума, наприклад: кава 80", examplesKeyboard());
       return;
     }
     if (parsed.title && !parsed.amount) {
       const category = await detectCategorySmart(env.DB, userId, parsed.title);
       await setState(env.DB, userId, "waiting_amount", { expense_title: parsed.title, category, date });
-      await sendMessage(env, chatId, `💸 Введи суму для «${capitalize(parsed.title)}»`, MAIN_KEYBOARD, true);
+      await sendServiceMessage(env, chatId, userId, `💸 Введи суму для «${capitalize(parsed.title)}»`, MAIN_KEYBOARD);
       return;
     }
     if (!parsed.title) {
-      await sendMessage(env, chatId, "Спочатку напиши назву витрати, наприклад: кава 80", MAIN_KEYBOARD, true);
+      await sendServiceMessage(env, chatId, userId, "Спочатку напиши назву витрати, наприклад: кава 80", MAIN_KEYBOARD);
       return;
     }
     const category = await detectCategorySmart(env.DB, userId, parsed.title);
@@ -839,10 +842,10 @@ async function handleManualExpenseInput(env, chatId, userId, text) {
 
   const missing = items.filter((item) => !item || !item.title || !item.amount);
   if (missing.length) {
-    await sendMessage(
-      env, chatId,
+    await sendServiceMessage(
+      env, chatId, userId,
       "У деяких витратах не бачу назву або суму. Напиши кожну як «назва сума», наприклад:\nкава 80, таксі 150",
-      MAIN_KEYBOARD, true
+      MAIN_KEYBOARD
     );
     return;
   }
@@ -874,13 +877,15 @@ async function handleManualExpenseInput(env, chatId, userId, text) {
   ];
   const budget = await budgetWarning(env.DB, userId, date);
   if (budget) lines.push("", budget);
+  // Підсумок мультидодавання — історія (як картка), але службовий промпт прибираємо.
+  await deleteServiceMessage(env, userId);
   await sendMessage(env, chatId, lines.join("\n"), MAIN_KEYBOARD, true);
 }
 
 async function handleAmountInput(env, chatId, userId, text, data) {
   const amount = parseAmount(text);
   if (!amount) {
-    await sendMessage(env, chatId, "Введи тільки суму, наприклад 300 або 149.50", MAIN_KEYBOARD, true);
+    await sendServiceMessage(env, chatId, userId, "Введи тільки суму, наприклад 300 або 149.50", MAIN_KEYBOARD);
     return;
   }
   await askExpenseType(env, chatId, userId, {
@@ -897,6 +902,8 @@ async function handleAmountInput(env, chatId, userId, text, data) {
 async function askExpenseType(env, chatId, userId, data) {
   const category = data.category || await detectCategorySmart(env.DB, userId, data.expense_title);
   await clearState(env.DB, userId);
+  // Картка витрати — історія, вона не трекається; службовий промпт перед нею зникає.
+  await deleteServiceMessage(env, userId);
   const pendingId = await insertPendingExpense(env.DB, {
     user_id: userId,
     chat_id: chatId,
@@ -962,18 +969,18 @@ async function cleanupPendingExpenses(db) {
 async function handleBudgetInput(env, chatId, userId, text) {
   const amount = parseAmount(text);
   if (!amount) {
-    await sendMessage(env, chatId, "Введи суму бюджету числом, наприклад 20000", MAIN_KEYBOARD, true);
+    await sendServiceMessage(env, chatId, userId, "Введи суму бюджету числом, наприклад 20000", MAIN_KEYBOARD);
     return;
   }
   await setMonthlyBudget(env.DB, userId, amount);
   await clearState(env.DB, userId);
-  await sendMessage(env, chatId, `💰 Бюджет на місяць встановлено: ${formatAmount(amount)} ${CURRENCY}`, MAIN_KEYBOARD, true);
+  await sendServiceMessage(env, chatId, userId, `💰 Бюджет на місяць встановлено: ${formatAmount(amount)} ${CURRENCY}`, MAIN_KEYBOARD);
 }
 
 async function handleStatsPeriodInput(env, chatId, userId, text) {
   const range = parseStatsPeriodInput(text);
   if (!range) {
-    await sendMessage(env, chatId, STATS_PERIOD_ERROR, statsPeriodInputKeyboard(), true);
+    await sendServiceMessage(env, chatId, userId, STATS_PERIOD_ERROR, statsPeriodInputKeyboard());
     return;
   }
   await showCustomStats(env, chatId, null, userId, range);
@@ -983,7 +990,7 @@ async function handleEditExpenseInput(env, chatId, userId, text, data) {
   const { date, items } = parseExpensesMessage(text);
   const parsed = items.length === 1 ? items[0] : null;
   if (!parsed?.title || !parsed?.amount) {
-    await sendMessage(env, chatId, "Напиши назву і суму, наприклад: кава 100", MAIN_KEYBOARD, true);
+    await sendServiceMessage(env, chatId, userId, "Напиши назву і суму, наприклад: кава 100", MAIN_KEYBOARD);
     return;
   }
 
@@ -993,7 +1000,7 @@ async function handleEditExpenseInput(env, chatId, userId, text, data) {
   const resultText = updated
     ? `✅ Оновлено\n\n${capitalize(cleanExpenseTitle(parsed.title))} — ${formatAmount(parsed.amount)} ${CURRENCY} • ${formatCategory(category)}`
     : "Витрату не знайдено";
-  await sendMessage(env, chatId, resultText, MAIN_KEYBOARD, true);
+  await sendServiceMessage(env, chatId, userId, resultText, MAIN_KEYBOARD);
 }
 
 // Розбирає повідомлення: дата («вчора», «1 липня»), кілька витрат через кому чи з нового рядка.
@@ -1253,7 +1260,7 @@ async function sendBudgetView(env, chatId, userId) {
     buttons.push([{ text: "💰 Встановити бюджет", callback_data: "budget_set" }]);
   }
   console.log("[BUDGET]", { user_id: userId, month: monthName, spent, budget });
-  await sendMessage(env, chatId, lines.join("\n"), { inline_keyboard: buttons }, true);
+  await sendServiceMessage(env, chatId, userId, lines.join("\n"), { inline_keyboard: buttons });
 }
 
 async function getActiveUsers(db) {
@@ -1426,11 +1433,11 @@ async function getExpensesByDate(db, userId, date) {
 async function sendManageDates(env, chatId, userId, mode) {
   const dates = await getExpenseDates(env.DB, userId);
   if (!dates.length) {
-    await sendMessage(env, chatId, "Витрат поки немає", MAIN_KEYBOARD, true);
+    await sendServiceMessage(env, chatId, userId, "Витрат поки немає", MAIN_KEYBOARD);
     return;
   }
   const title = mode === "edit" ? "✏️ Редагування" : "🗑 Видалення";
-  await sendMessage(env, chatId, `${title}\n\nОбери день:`, manageDatesKeyboard(dates, mode), true);
+  await sendServiceMessage(env, chatId, userId, `${title}\n\nОбери день:`, manageDatesKeyboard(dates, mode));
 }
 
 async function showManageDates(env, chatId, messageId, userId, mode) {
@@ -1569,7 +1576,7 @@ async function showCustomStats(env, chatId, messageId, userId, range) {
     await editMessage(env, chatId, messageId, text, replyMarkup || { inline_keyboard: [] });
     return;
   }
-  await sendMessage(env, chatId, text, replyMarkup, true);
+  await sendServiceMessage(env, chatId, userId, text, replyMarkup);
 }
 
 async function showStats(env, chatId, messageId, userId, range, scope) {
@@ -2190,6 +2197,55 @@ async function deleteMessage(env, chatId, messageId) {
   return telegram(env, "deleteMessage", { chat_id: chatId, message_id: messageId });
 }
 
+// Службове повідомлення (меню/промпт/помилка) у юзера завжди одне: перед новим
+// видаляємо попереднє. Картки витрат не трекаються — вони історія.
+async function sendServiceMessage(env, chatId, userId, text, replyMarkup) {
+  await deleteServiceMessage(env, userId);
+  const sent = await sendMessage(env, chatId, text, replyMarkup, true);
+  const messageId = Number(sent?.result?.message_id || 0);
+  if (!messageId) return;
+  try {
+    await env.DB.prepare(
+      `INSERT INTO service_messages (user_id, chat_id, message_id, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(user_id) DO UPDATE SET
+         chat_id = excluded.chat_id,
+         message_id = excluded.message_id,
+         updated_at = excluded.updated_at`
+    ).bind(userId, chatId, messageId, kyivNow().datetime).run();
+  } catch (error) {
+    // Без таблиці (міграцію не застосовано) поводимось як звичайний sendMessage.
+    console.log("[SERVICE_MSG_ERROR]", { action: "save", error: String(error) });
+  }
+}
+
+async function deleteServiceMessage(env, userId) {
+  let row;
+  try {
+    row = await env.DB.prepare(
+      "SELECT chat_id, message_id FROM service_messages WHERE user_id = ?"
+    ).bind(userId).first();
+  } catch (error) {
+    console.log("[SERVICE_MSG_ERROR]", { action: "load", error: String(error) });
+    return;
+  }
+  if (!row) return;
+  await env.DB.prepare("DELETE FROM service_messages WHERE user_id = ?").bind(userId).run();
+  // Помилка видалення не критична — юзер міг видалити повідомлення сам.
+  await deleteMessage(env, row.chat_id, row.message_id);
+}
+
+// Коли трековане повідомлення видалили напряму (напр. закриття статистики) —
+// просто забуваємо його id, без повторного deleteMessage.
+async function forgetServiceMessage(db, userId, messageId) {
+  try {
+    await db.prepare("DELETE FROM service_messages WHERE user_id = ? AND message_id = ?")
+      .bind(userId, messageId).run();
+  } catch (error) {
+    console.log("[SERVICE_MSG_ERROR]", { action: "forget", error: String(error) });
+  }
+}
+
 async function editMessage(env, chatId, messageId, text, replyMarkup) {
   if (!messageId) return sendMessage(env, chatId, text, replyMarkup, true);
   return telegram(env, "editMessageText", {
@@ -2204,6 +2260,8 @@ async function answerCallback(env, callbackQueryId) {
   return telegram(env, "answerCallbackQuery", { callback_query_id: callbackQueryId });
 }
 
+// Повертає розпарсену відповідь Bot API (null при помилці) — так sendServiceMessage
+// дістає message_id надісланого повідомлення; сирий Response ніхто не використовує.
 async function telegram(env, method, payload) {
   const response = await fetch(`${TELEGRAM_API}${env.BOT_TOKEN}/${method}`, {
     method: "POST",
@@ -2212,8 +2270,9 @@ async function telegram(env, method, payload) {
   });
   if (!response.ok) {
     console.log("[TELEGRAM_ERROR]", method, response.status, await response.text());
+    return null;
   }
-  return response;
+  return response.json().catch(() => null);
 }
 
 function startText() {
