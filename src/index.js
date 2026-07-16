@@ -10,10 +10,9 @@ const MAIN_KEYBOARD = {
   resize_keyboard: true,
   input_field_placeholder: "Введи витрату або обери дію…"
 };
-const BACK_KEYBOARD = {
-  keyboard: [[{ text: "⬅️ Назад" }]],
-  resize_keyboard: true
-};
+// Reply-клавіатура ніколи не підміняється: всі промпти вводу лишають MAIN_KEYBOARD,
+// щоб не плодити повідомлення-відновлення меню.
+const ADD_EXPENSE_SHORT_HINT = "✍️ Напиши витрату: назва і сума, наприклад: кава 80";
 
 const CRON_DAILY = "0 7 * * *";
 const CRON_WEEKLY = "0 17 * * SUN";
@@ -284,7 +283,9 @@ async function handleMessage(message, env) {
 
   if (text === "➕ Додати витрату") {
     await clearState(env.DB, userId);
-    await sendMessage(env, chatId, ADD_EXPENSE_HINT, addExpenseHelpKeyboard(), true);
+    // Повна інструкція — лише тим, хто ще нічого не записав; решті короткий рядок.
+    const experienced = await userHasExpenses(env.DB, userId);
+    await sendMessage(env, chatId, experienced ? ADD_EXPENSE_SHORT_HINT : ADD_EXPENSE_HINT, addExpenseHelpKeyboard(experienced), true);
     return;
   }
 
@@ -386,12 +387,9 @@ async function handleCallback(callback, env) {
       return;
     }
     await setState(env.DB, userId, "waiting_edit_input", { expense_id: expenseId });
-    await deleteMessage(env, chatId, messageId);
-    await sendMessage(
-      env, chatId,
-      `✏️ Редагування\n\n${capitalize(expense.expense_title)} — ${formatAmount(expense.amount)} ${CURRENCY}\n\nНапиши нову назву і суму, наприклад:\n${expense.expense_title} ${expense.amount}`,
-      BACK_KEYBOARD,
-      true
+    await editMessage(
+      env, chatId, messageId,
+      `✏️ Редагування\n\n${capitalize(expense.expense_title)} — ${formatAmount(expense.amount)} ${CURRENCY}\n\nНапиши нову назву і суму, наприклад:\n${expense.expense_title} ${expense.amount}`
     );
     return;
   }
@@ -421,8 +419,7 @@ async function handleCallback(callback, env) {
 
   if (data === "stats:custom") {
     await setState(env.DB, userId, WAITING_FOR_STATS_PERIOD, {});
-    await deleteMessage(env, chatId, messageId);
-    await sendMessage(env, chatId, STATS_PERIOD_PROMPT, statsPeriodInputKeyboard(), true);
+    await editMessage(env, chatId, messageId, STATS_PERIOD_PROMPT);
     return;
   }
 
@@ -480,7 +477,6 @@ async function handleCallback(callback, env) {
   if (data === "stats_main_back") {
     await clearState(env.DB, userId);
     await deleteMessage(env, chatId, messageId);
-    await sendMainMenu(env, chatId);
     return;
   }
 
@@ -496,7 +492,13 @@ async function handleCallback(callback, env) {
   }
 
   if (data === "quick_categories_back") {
-    await editMessage(env, chatId, messageId, ADD_EXPENSE_HINT, addExpenseHelpKeyboard());
+    const experienced = await userHasExpenses(env.DB, userId);
+    await editMessage(env, chatId, messageId, experienced ? ADD_EXPENSE_SHORT_HINT : ADD_EXPENSE_HINT, addExpenseHelpKeyboard(experienced));
+    return;
+  }
+
+  if (data === "add_examples") {
+    await editMessage(env, chatId, messageId, ADD_EXPENSE_HINT, addExpenseHelpKeyboard(false));
     return;
   }
 
@@ -510,8 +512,7 @@ async function handleCallback(callback, env) {
     const [, category, subcategory] = data.split(":");
     const title = SUBCATEGORY_TITLES[`${category}:${subcategory}`] || "витрата";
     await setState(env.DB, userId, "waiting_amount", { expense_title: title, category });
-    await deleteMessage(env, chatId, messageId);
-    await sendMessage(env, chatId, `Введи суму 💸\n\n${capitalize(title)}`, BACK_KEYBOARD, true);
+    await editMessage(env, chatId, messageId, `Введи суму 💸\n\n${capitalize(title)}`);
     return;
   }
 
@@ -540,7 +541,6 @@ async function handleCallback(callback, env) {
     const expense = await getExpenseById(env.DB, userId, expenseId);
     const budget = await budgetWarning(env.DB, userId, expense.expense_date);
     await editMessage(env, chatId, messageId, expenseCardText(expense, budget), expenseCardKeyboard(expense));
-    await sendMessage(env, chatId, "✍️ Введи наступну витрату", MAIN_KEYBOARD, true);
     return;
   }
 
@@ -602,8 +602,7 @@ async function handleCallback(callback, env) {
 
   if (data === "budget_set") {
     await setState(env.DB, userId, "waiting_budget", {});
-    await deleteMessage(env, chatId, messageId);
-    await sendMessage(env, chatId, "💰 Напиши суму бюджету на місяць, наприклад 20000", BACK_KEYBOARD, true);
+    await editMessage(env, chatId, messageId, "💰 Напиши суму бюджету на місяць, наприклад 20000");
     return;
   }
 
@@ -787,24 +786,24 @@ async function adminBlockedText(db) {
 async function handleManualExpenseInput(env, chatId, userId, text) {
   const { date, items } = parseExpensesMessage(text);
   if (!items.length) {
-    await sendMessage(env, chatId, ADD_EXPENSE_HINT, BACK_KEYBOARD, true);
+    await sendMessage(env, chatId, "Не зрозумів 🤔 Напиши: назва і сума, наприклад: кава 80", examplesKeyboard(), true);
     return;
   }
 
   if (items.length === 1) {
     const parsed = items[0];
     if (!parsed || (!parsed.title && !parsed.amount)) {
-      await sendMessage(env, chatId, ADD_EXPENSE_HINT, BACK_KEYBOARD, true);
+      await sendMessage(env, chatId, "Не зрозумів 🤔 Напиши: назва і сума, наприклад: кава 80", examplesKeyboard(), true);
       return;
     }
     if (parsed.title && !parsed.amount) {
       const category = await detectCategorySmart(env.DB, userId, parsed.title);
       await setState(env.DB, userId, "waiting_amount", { expense_title: parsed.title, category, date });
-      await sendMessage(env, chatId, `💸 Введи суму для «${capitalize(parsed.title)}»`, BACK_KEYBOARD, true);
+      await sendMessage(env, chatId, `💸 Введи суму для «${capitalize(parsed.title)}»`, MAIN_KEYBOARD, true);
       return;
     }
     if (!parsed.title) {
-      await sendMessage(env, chatId, "Спочатку напиши назву витрати, наприклад: кава 80", BACK_KEYBOARD, true);
+      await sendMessage(env, chatId, "Спочатку напиши назву витрати, наприклад: кава 80", MAIN_KEYBOARD, true);
       return;
     }
     const category = await detectCategorySmart(env.DB, userId, parsed.title);
@@ -822,7 +821,7 @@ async function handleManualExpenseInput(env, chatId, userId, text) {
     await sendMessage(
       env, chatId,
       "У деяких витратах не бачу назву або суму. Напиши кожну як «назва сума», наприклад:\nкава 80, таксі 150",
-      BACK_KEYBOARD, true
+      MAIN_KEYBOARD, true
     );
     return;
   }
@@ -860,7 +859,7 @@ async function handleManualExpenseInput(env, chatId, userId, text) {
 async function handleAmountInput(env, chatId, userId, text, data) {
   const amount = parseAmount(text);
   if (!amount) {
-    await sendMessage(env, chatId, "Введи тільки суму, наприклад 300 або 149.50", BACK_KEYBOARD, true);
+    await sendMessage(env, chatId, "Введи тільки суму, наприклад 300 або 149.50", MAIN_KEYBOARD, true);
     return;
   }
   await askExpenseType(env, chatId, userId, {
@@ -942,7 +941,7 @@ async function cleanupPendingExpenses(db) {
 async function handleBudgetInput(env, chatId, userId, text) {
   const amount = parseAmount(text);
   if (!amount) {
-    await sendMessage(env, chatId, "Введи суму бюджету числом, наприклад 20000", BACK_KEYBOARD, true);
+    await sendMessage(env, chatId, "Введи суму бюджету числом, наприклад 20000", MAIN_KEYBOARD, true);
     return;
   }
   await setMonthlyBudget(env.DB, userId, amount);
@@ -963,7 +962,7 @@ async function handleEditExpenseInput(env, chatId, userId, text, data) {
   const { date, items } = parseExpensesMessage(text);
   const parsed = items.length === 1 ? items[0] : null;
   if (!parsed?.title || !parsed?.amount) {
-    await sendMessage(env, chatId, "Напиши назву і суму, наприклад: кава 100", BACK_KEYBOARD, true);
+    await sendMessage(env, chatId, "Напиши назву і суму, наприклад: кава 100", MAIN_KEYBOARD, true);
     return;
   }
 
@@ -1550,7 +1549,6 @@ async function showCustomStats(env, chatId, messageId, userId, range) {
     return;
   }
   await sendMessage(env, chatId, text, replyMarkup, true);
-  await sendMainMenu(env, chatId);
 }
 
 async function showStats(env, chatId, messageId, userId, range, scope) {
@@ -1848,7 +1846,7 @@ function statsKeyboard() {
 }
 
 function statsPeriodInputKeyboard() {
-  return BACK_KEYBOARD;
+  return MAIN_KEYBOARD;
 }
 
 function categoryDetailsKeyboard(categories, scope) {
@@ -1879,10 +1877,19 @@ function customCategoryDetailsKeyboard(categories) {
   return { inline_keyboard: rows };
 }
 
-function addExpenseHelpKeyboard() {
-  return {
-    inline_keyboard: [[{ text: "⚡ Швидкий вибір категорії", callback_data: "add_quick" }]]
-  };
+function addExpenseHelpKeyboard(showExamples = false) {
+  const rows = [[{ text: "⚡ Швидкий вибір категорії", callback_data: "add_quick" }]];
+  if (showExamples) rows.push([{ text: "❓ Приклади", callback_data: "add_examples" }]);
+  return { inline_keyboard: rows };
+}
+
+function examplesKeyboard() {
+  return { inline_keyboard: [[{ text: "❓ Приклади", callback_data: "add_examples" }]] };
+}
+
+async function userHasExpenses(db, userId) {
+  const row = await db.prepare("SELECT 1 AS one FROM expenses WHERE user_id = ? LIMIT 1").bind(userId).first();
+  return Boolean(row);
 }
 
 function quickCategoryKeyboard() {
@@ -2149,10 +2156,6 @@ async function sendMessage(env, chatId, text, replyMarkup, silent = false) {
     reply_markup: replyMarkup,
     disable_notification: silent
   });
-}
-
-async function sendMainMenu(env, chatId) {
-  return sendMessage(env, chatId, "Обери дію 👇", MAIN_KEYBOARD, true);
 }
 
 async function deleteMessage(env, chatId, messageId) {
