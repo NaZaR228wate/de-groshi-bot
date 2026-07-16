@@ -8,7 +8,7 @@ const MAIN_KEYBOARD = {
     [{ text: "✏️ Керувати витратами" }]
   ],
   resize_keyboard: true,
-  input_field_placeholder: "Вибери дію..."
+  input_field_placeholder: "Введи витрату або обери дію…"
 };
 const BACK_KEYBOARD = {
   keyboard: [[{ text: "⬅️ Назад" }]],
@@ -200,7 +200,7 @@ async function handleMessage(message, env) {
     await clearState(env.DB, userId);
     console.log("[USER]", { user_id: userId, username, action: "register_or_login" });
     if (user?.status === "blocked") {
-      await sendMessage(env, chatId, "доступ обмежено", undefined, true);
+      await sendMessage(env, chatId, "Доступ обмежено", undefined, true);
       return;
     }
     if (isAdmin(env, userId) || hasActiveAccess(user)) {
@@ -223,7 +223,7 @@ async function handleMessage(message, env) {
 
   if (["я оплатив", "оплатив", "paid"].includes(text.toLowerCase())) {
     await ensurePendingPayment(env.DB, userId, 390, 30);
-    await sendMessage(env, chatId, "заявку на оплату передано на перевірку", paymentKeyboard(), true);
+    await sendMessage(env, chatId, "Заявку на оплату передано на перевірку", paymentKeyboard(), true);
     await notifyAdmins(env, userId, username, 30);
     return;
   }
@@ -364,7 +364,6 @@ async function handleCallback(callback, env) {
     await editMessage(env, chatId, messageId, text, {
       inline_keyboard: [[{ text: "⬅️ До списку", callback_data: `manage_dates:delete` }]]
     });
-    await sendMainMenu(env, chatId);
     return;
   }
 
@@ -491,7 +490,7 @@ async function handleCallback(callback, env) {
     const expense = await getExpenseById(env.DB, userId, expenseId);
     const budget = await budgetWarning(env.DB, userId, expense.expense_date);
     await editMessage(env, chatId, messageId, expenseCardText(expense, budget), expenseCardKeyboard(expense));
-    await sendMainMenu(env, chatId);
+    await sendMessage(env, chatId, "✍️ Введи наступну витрату", MAIN_KEYBOARD, true);
     return;
   }
 
@@ -508,7 +507,6 @@ async function handleCallback(callback, env) {
     const updated = { ...expense, expense_type: newType };
     const budget = await budgetWarning(env.DB, userId, updated.expense_date);
     await editMessage(env, chatId, messageId, expenseCardText(updated, budget), expenseCardKeyboard(updated));
-    await sendMainMenu(env, chatId);
     return;
   }
 
@@ -537,7 +535,6 @@ async function handleCallback(callback, env) {
     const updated = { ...expense, category };
     const budget = await budgetWarning(env.DB, userId, updated.expense_date);
     await editMessage(env, chatId, messageId, expenseCardText(updated, budget), expenseCardKeyboard(updated));
-    await sendMainMenu(env, chatId);
     return;
   }
 
@@ -564,7 +561,6 @@ async function handleCallback(callback, env) {
     await setMonthlyBudget(env.DB, userId, null);
     await clearState(env.DB, userId);
     await editMessage(env, chatId, messageId, "Бюджет прибрано. Можеш встановити новий у меню «💰 Бюджет».");
-    await sendMainMenu(env, chatId);
     return;
   }
 
@@ -579,7 +575,7 @@ async function handleCallback(callback, env) {
     const days = data.includes("_") ? Number(data.split("_")[1]) : 30;
     const amount = days === 7 ? 290 : 390;
     await ensurePendingPayment(env.DB, userId, amount, days);
-    await editMessage(env, chatId, messageId, "дякую 🙌\n\nперевірю оплату і відкрию доступ протягом 1–5 хвилин.");
+    await editMessage(env, chatId, messageId, "Дякую 🙌\n\nПеревірю оплату і відкрию доступ протягом 1–5 хвилин.");
     await notifyAdmins(env, userId, callback.from?.username || "", days);
     return;
   }
@@ -591,7 +587,7 @@ async function handleCallback(callback, env) {
 
 async function handleAdminCommand(env, userId, chatId) {
   if (!isAdmin(env, userId)) {
-    await sendMessage(env, chatId, "немає доступу", undefined, true);
+    await sendMessage(env, chatId, "Немає доступу", undefined, true);
     return;
   }
   await sendMessage(env, chatId, "Адмін-панель:", adminKeyboard(), true);
@@ -599,7 +595,7 @@ async function handleAdminCommand(env, userId, chatId) {
 
 async function handleAdminTextCommand(env, adminId, chatId, text) {
   if (!isAdmin(env, adminId)) {
-    await sendMessage(env, chatId, "немає доступу", undefined, true);
+    await sendMessage(env, chatId, "Немає доступу", undefined, true);
     return;
   }
 
@@ -611,25 +607,25 @@ async function handleAdminTextCommand(env, adminId, chatId, text) {
 
   if (command === "/block") {
     await env.DB.prepare("UPDATE users SET status = 'blocked' WHERE user_id = ?").bind(targetUserId).run();
-    await sendMessage(env, chatId, "користувача заблоковано", undefined, true);
+    await sendMessage(env, chatId, "Користувача заблоковано", undefined, true);
     return;
   }
 
   if (command === "/unblock") {
     await env.DB.prepare("UPDATE users SET status = 'active' WHERE user_id = ?").bind(targetUserId).run();
-    await sendMessage(env, chatId, "користувача розблоковано", undefined, true);
+    await sendMessage(env, chatId, "Користувача розблоковано", undefined, true);
     return;
   }
 
   if (command === "/grant") {
     const days = Number(daysText || 30);
     if (![7, 30].includes(days)) {
-      await sendMessage(env, chatId, "дні мають бути 7 або 30", undefined, true);
+      await sendMessage(env, chatId, "Дні мають бути 7 або 30", undefined, true);
       return;
     }
     const targetUser = await getUser(env.DB, targetUserId);
     if (!targetUser) {
-      await sendMessage(env, chatId, "користувач не знайдений", undefined, true);
+      await sendMessage(env, chatId, "Користувача не знайдено", undefined, true);
       return;
     }
     const currentEnd = targetUser.access_until && hasActiveAccess(targetUser)
@@ -641,8 +637,8 @@ async function handleAdminTextCommand(env, adminId, chatId, text) {
       "UPDATE users SET access_until = ?, tariff = ?, status = 'active' WHERE user_id = ?"
     ).bind(accessUntil, `${days}_days`, targetUserId).run();
     console.log("[ADMIN]", { action: "grant", admin_id: adminId, user_id: targetUserId, days });
-    await sendMessage(env, chatId, "доступ видано", undefined, true);
-    await sendMessage(env, targetUserId, "доступ відкрито 🚀", MAIN_KEYBOARD, true);
+    await sendMessage(env, chatId, "Доступ видано", undefined, true);
+    await sendMessage(env, targetUserId, "Доступ відкрито 🚀", MAIN_KEYBOARD, true);
   }
 }
 
@@ -1037,14 +1033,13 @@ function expenseCardText(expense, budgetLine) {
     `${typeLabel} • ${formatCategory(expense.category)} • 📅 ${formatShortDate(parseDate(expense.expense_date))}`
   ];
   if (budgetLine) lines.push("", budgetLine);
-  lines.push("", "Пиши наступну витрату або натисни ⬅️ Назад");
   return lines.join("\n");
 }
 
 function expenseCardKeyboard(expense) {
   const typeButton = expense.expense_type === "emotional"
     ? { text: "📌 Зробити плановою", callback_data: `exp_type:${expense.id}` }
-    : { text: "🔥 Це емоційна", callback_data: `exp_type:${expense.id}` };
+    : { text: "🔥 Емоційна витрата", callback_data: `exp_type:${expense.id}` };
   return {
     inline_keyboard: [
       [typeButton],
@@ -1324,7 +1319,6 @@ async function showManageDates(env, chatId, messageId, userId, mode) {
   const dates = await getExpenseDates(env.DB, userId);
   if (!dates.length) {
     await editMessage(env, chatId, messageId, "Витрат поки немає");
-    await sendMainMenu(env, chatId);
     return;
   }
   const title = mode === "edit" ? "✏️ Редагування" : "🗑 Видалення";
@@ -1501,7 +1495,6 @@ async function showStats(env, chatId, messageId, userId, range, scope) {
   }
 
   await editMessage(env, chatId, messageId, text, categoryDetailsKeyboard(categories, scope));
-  await sendMainMenu(env, chatId);
 }
 
 async function showCategoryDetails(env, chatId, messageId, userId, detail) {
@@ -1821,13 +1814,13 @@ function paymentKeyboard() {
     inline_keyboard: [
       [{ text: "💳 7 днів — 290 грн", callback_data: "buy_7" }],
       [{ text: "🔥 30 днів — 390 грн", callback_data: "buy_30" }],
-      [{ text: "✅ я оплатив", callback_data: "paid" }]
+      [{ text: "✅ Я оплатив", callback_data: "paid" }]
     ]
   };
 }
 
 function paidKeyboard(days) {
-  return { inline_keyboard: [[{ text: "✅ я оплатив", callback_data: `paid_${days}` }]] };
+  return { inline_keyboard: [[{ text: "✅ Я оплатив", callback_data: `paid_${days}` }]] };
 }
 
 function manageExpensesText() {
@@ -1858,7 +1851,7 @@ async function ensureAccess(env, userId, chatId, callbackData = "") {
   if (isAdmin(env, userId)) return true;
   const user = await getUser(env.DB, userId);
   if (user?.status === "blocked") {
-    await sendMessage(env, chatId, "доступ обмежено", undefined, true);
+    await sendMessage(env, chatId, "Доступ обмежено", undefined, true);
     return false;
   }
   if (callbackData.startsWith("buy_") || callbackData.startsWith("paid")) return true;
@@ -1881,21 +1874,21 @@ function hasActiveAccess(user) {
 
 function paywallText(accessUntil) {
   if (accessUntil && !hasActiveAccess({ access_until: accessUntil })) {
-    return "доступ закінчився ⏳\n\nщоб знову бачити статистику витрат,\nпродовжи доступ 👇";
+    return "Доступ закінчився ⏳\n\nЩоб знову бачити статистику витрат,\nпродовжи доступ 👇";
   }
-  return "доступ до бота платний 👇\n\n7 днів — 290 грн\n🔥 30 днів — 390 грн\n\n30 днів вигідніше — різниця лише 100 грн.\n\nобери варіант:";
+  return "Доступ до бота платний 👇\n\n7 днів — 290 грн\n🔥 30 днів — 390 грн\n\n30 днів вигідніше — різниця лише 100 грн.\n\nОбери варіант:";
 }
 
 function paymentText(env, days) {
   return [
-    "для оплати:",
+    "Для оплати:",
     "",
     `mono: ${env.MONO_CARD || "не задано"}`,
     `privat: ${env.PRIVAT_CARD || "не задано"}`,
     "",
-    `тариф: ${days} днів`,
+    `Тариф: ${days} днів`,
     "",
-    "після оплати натисни «я оплатив»"
+    "Після оплати натисни «✅ Я оплатив»"
   ].join("\n");
 }
 
@@ -1910,7 +1903,7 @@ async function handleAdminPaymentAction(env, callback, data) {
       "UPDATE payments SET status = 'rejected', comment = ? WHERE user_id = ? AND status = 'pending'"
     ).bind("admin rejected", targetUserId).run();
     console.log("[PAYMENT]", { user_id: targetUserId, status: "rejected" });
-    await sendMessage(env, targetUserId, "не знайшов оплату 😔\nперевір ще раз або напиши мені", paymentKeyboard(), true);
+    await sendMessage(env, targetUserId, "Не знайшов оплату 😔\nПеревір ще раз або напиши мені", paymentKeyboard(), true);
     return;
   }
 
@@ -1931,7 +1924,7 @@ async function handleAdminPaymentAction(env, callback, data) {
   ).bind(kyivNow().datetime, `admin ${adminId}`, targetUserId).run();
 
   console.log("[PAYMENT]", { user_id: targetUserId, tariff_days: days, amount: days === 7 ? 290 : 390, status: "paid" });
-  await sendMessage(env, targetUserId, `доступ відкрито 🚀\n\nдо: ${formatHumanDate(accessUntil)}`, MAIN_KEYBOARD, true);
+  await sendMessage(env, targetUserId, `Доступ відкрито 🚀\n\nДо: ${formatHumanDate(accessUntil)}`, MAIN_KEYBOARD, true);
 }
 
 async function createPayment(db, userId, amount, tariffDays, status) {
@@ -1953,7 +1946,7 @@ async function notifyAdmins(env, userId, username, tariff) {
   const admins = parseIds(env.ADMIN_USER_IDS);
   for (const adminId of admins) {
     await sendMessage(env, adminId, [
-      "новий запит на доступ 💰",
+      "Новий запит на доступ 💰",
       "",
       `user_id: ${userId}`,
       `username: ${username ? `@${username}` : "—"}`,
@@ -1962,7 +1955,7 @@ async function notifyAdmins(env, userId, username, tariff) {
       inline_keyboard: [
         [{ text: "✅ 7 днів", callback_data: `confirm_7_${userId}` }],
         [{ text: "✅ 30 днів", callback_data: `confirm_30_${userId}` }],
-        [{ text: "❌ відхилити", callback_data: `reject_${userId}` }]
+        [{ text: "❌ Відхилити", callback_data: `reject_${userId}` }]
       ]
     }, true);
   }
