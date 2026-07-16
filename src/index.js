@@ -267,9 +267,19 @@ async function handleMessage(message, env) {
   }
 
   if (["я оплатив", "оплатив", "paid"].includes(text.toLowerCase())) {
-    await ensurePendingPayment(env.DB, userId, 390, 30);
+    // Цей хендлер стоїть до ensureAccess, тож блокування треба перевірити тут окремо.
+    if (user?.status === "blocked") {
+      await sendMessage(env, chatId, "Доступ обмежено", undefined, true);
+      return;
+    }
+    // Тариф береться з заявки, створеної кнопкою buy_7/buy_30, — без вигаданих 390/30.
+    const pending = await getPendingPayment(env.DB, userId);
+    if (!pending) {
+      await sendMessage(env, chatId, "Спочатку обери тариф 👇", paymentKeyboard(), true);
+      return;
+    }
     await sendMessage(env, chatId, "Заявку на оплату передано на перевірку", paymentKeyboard(), true);
-    await notifyAdmins(env, userId, username, 30);
+    await notifyAdmins(env, userId, username, Number(pending.tariff_days));
     return;
   }
 
@@ -621,9 +631,20 @@ async function handleCallback(callback, env) {
   }
 
   if (data === "paid" || data.startsWith("paid_")) {
-    const days = data.includes("_") ? Number(data.split("_")[1]) : 30;
-    const amount = days === 7 ? 290 : 390;
-    await ensurePendingPayment(env.DB, userId, amount, days);
+    const chosenDays = data.includes("_") ? Number(data.split("_")[1]) : 0;
+    let days;
+    if (chosenDays === 7 || chosenDays === 30) {
+      days = chosenDays;
+      await ensurePendingPayment(env.DB, userId, days === 7 ? 290 : 390, days);
+    } else {
+      // Голий callback "paid" не каже, який тариф обрано, — беремо з актуальної заявки.
+      const pending = await getPendingPayment(env.DB, userId);
+      if (!pending) {
+        await editMessage(env, chatId, messageId, "Спочатку обери тариф 👇", paymentKeyboard());
+        return;
+      }
+      days = Number(pending.tariff_days);
+    }
     await editMessage(env, chatId, messageId, "Дякую 🙌\n\nПеревірю оплату і відкрию доступ протягом 1–5 хвилин.");
     await notifyAdmins(env, userId, callback.from?.username || "", days);
     return;
@@ -2030,6 +2051,12 @@ async function handleAdminPaymentAction(env, callback, data) {
 
   console.log("[PAYMENT]", { user_id: targetUserId, tariff_days: days, amount: days === 7 ? 290 : 390, status: "paid" });
   await sendMessage(env, targetUserId, `Доступ відкрито 🚀\n\nДо: ${formatHumanDate(accessUntil)}`, MAIN_KEYBOARD, true);
+}
+
+async function getPendingPayment(db, userId) {
+  return db.prepare(
+    "SELECT id, amount, tariff_days FROM payments WHERE user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1"
+  ).bind(userId).first();
 }
 
 async function createPayment(db, userId, amount, tariffDays, status) {
