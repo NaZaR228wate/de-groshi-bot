@@ -313,7 +313,7 @@ async function handleMessage(message, env) {
       return;
     }
     await sendMessage(env, chatId, "Заявку на оплату передано на перевірку", paymentKeyboard(), true);
-    await notifyAdmins(env, userId, username, Number(pending.tariff_days));
+    await notifyAdmins(env, userId, username, pending);
     return;
   }
 
@@ -678,25 +678,21 @@ async function handleCallback(callback, env) {
 
   if (data === "paid" || data.startsWith("paid_")) {
     const chosenDays = data.includes("_") ? Number(data.split("_")[1]) : 0;
-    let days;
     if (chosenDays === 7 || chosenDays === 30) {
-      days = chosenDays;
-      await ensurePendingPayment(env.DB, userId, days === 7 ? 290 : 390, days);
-    } else {
-      // Голий callback "paid" не каже, який тариф обрано, — беремо з актуальної заявки.
-      const pending = await getPendingPayment(env.DB, userId);
-      if (!pending) {
-        await editMessage(env, chatId, messageId, "Спочатку обери тариф 👇", paymentKeyboard());
-        return;
-      }
-      days = Number(pending.tariff_days);
+      await ensurePendingPayment(env.DB, userId, chosenDays === 7 ? 290 : 390, chosenDays);
+    }
+    // Голий "paid" тарифу не несе — беремо актуальну (єдину) заявку юзера.
+    const pending = await getPendingPayment(env.DB, userId);
+    if (!pending) {
+      await editMessage(env, chatId, messageId, "Спочатку обери тариф 👇", paymentKeyboard());
+      return;
     }
     await editMessage(env, chatId, messageId, "Дякую 🙌\n\nПеревірю оплату і відкрию доступ протягом 1–5 хвилин.");
-    await notifyAdmins(env, userId, callback.from?.username || "", days);
+    await notifyAdmins(env, userId, callback.from?.username || "", pending);
     return;
   }
 
-  if (data.startsWith("confirm_") || data.startsWith("reject_")) {
+  if (data.startsWith("paycfm_") || data.startsWith("payrej_") || data.startsWith("confirm_") || data.startsWith("reject_")) {
     await handleAdminPaymentAction(env, callback, data);
   }
 }
@@ -2064,10 +2060,62 @@ function paymentText(env, days) {
   ].join("\n");
 }
 
+// Продовжує доступ юзеру на days днів від поточного кінця (або від сьогодні).
+async function grantAccess(env, targetUserId, days, adminId) {
+  const targetUser = await getUser(env.DB, targetUserId);
+  const currentEnd = targetUser?.access_until && hasActiveAccess(targetUser)
+    ? parseDate(String(targetUser.access_until).slice(0, 10))
+    : parseDate(kyivNow().date);
+  const until = addDays(currentEnd, days);
+  const accessUntil = `${formatDate(until)} 23:59:59`;
+  await env.DB.prepare(
+    "UPDATE users SET access_until = ?, tariff = ?, status = 'active' WHERE user_id = ?"
+  ).bind(accessUntil, `${days}_days`, targetUserId).run();
+  console.log("[PAYMENT]", { user_id: targetUserId, tariff_days: days, status: "paid", admin_id: adminId });
+  return accessUntil;
+}
+
 async function handleAdminPaymentAction(env, callback, data) {
   const adminId = String(callback.from?.id || "");
   if (!isAdmin(env, adminId)) return;
+  const adminChatId = String(callback.message?.chat?.id || "");
+  const adminMsgId = callback.message?.message_id;
 
+  // Новий формат: дія по конкретному payments.id.
+  if (data.startsWith("paycfm_") || data.startsWith("payrej_")) {
+    const paymentId = Number(data.split("_")[1]);
+    const payment = await env.DB.prepare(
+      "SELECT id, user_id, amount, tariff_days, status FROM payments WHERE id = ?"
+    ).bind(paymentId).first();
+    if (!payment) {
+      await editMessage(env, adminChatId, adminMsgId, "Заявку не знайдено");
+      return;
+    }
+    const targetUserId = String(payment.user_id);
+    if (payment.status !== "pending") {
+      // Захист від подвійного тапу: заявку вже підтвердили/відхилили.
+      await editMessage(env, adminChatId, adminMsgId, `Заявку вже оброблено (${payment.status})`);
+      return;
+    }
+    if (data.startsWith("payrej_")) {
+      await env.DB.prepare("UPDATE payments SET status = 'rejected', comment = ? WHERE id = ?")
+        .bind(`admin ${adminId}`, paymentId).run();
+      console.log("[PAYMENT]", { payment_id: paymentId, user_id: targetUserId, status: "rejected" });
+      await sendMessage(env, targetUserId, "Не знайшов оплату 😔\nПеревір ще раз або напиши мені", paymentKeyboard(), true);
+      await editMessage(env, adminChatId, adminMsgId, `❌ Відхилено (user ${targetUserId})`);
+      return;
+    }
+    // Confirm фіксує саме той тариф і суму, що в заявці.
+    const days = Number(payment.tariff_days);
+    const accessUntil = await grantAccess(env, targetUserId, days, adminId);
+    await env.DB.prepare("UPDATE payments SET status = 'paid', paid_at = ?, comment = ? WHERE id = ?")
+      .bind(kyivNow().datetime, `admin ${adminId}`, paymentId).run();
+    await sendMessage(env, targetUserId, `Доступ відкрито 🚀\n\nДо: ${formatHumanDate(accessUntil)}`, MAIN_KEYBOARD, true);
+    await editMessage(env, adminChatId, adminMsgId, `✅ Підтверджено ${days} дн / ${Number(payment.amount)} грн (user ${targetUserId})`);
+    return;
+  }
+
+  // Старий формат (fallback для повідомлень, надісланих до цього оновлення).
   const parts = data.split("_");
   if (parts[0] === "reject") {
     const targetUserId = parts[1];
@@ -2081,21 +2129,10 @@ async function handleAdminPaymentAction(env, callback, data) {
 
   const days = Number(parts[1]);
   const targetUserId = parts[2];
-  const targetUser = await getUser(env.DB, targetUserId);
-  const currentEnd = targetUser?.access_until && hasActiveAccess(targetUser)
-    ? parseDate(String(targetUser.access_until).slice(0, 10))
-    : parseDate(kyivNow().date);
-  const until = addDays(currentEnd, days);
-  const accessUntil = `${formatDate(until)} 23:59:59`;
-
-  await env.DB.prepare(
-    "UPDATE users SET access_until = ?, tariff = ?, status = 'active' WHERE user_id = ?"
-  ).bind(accessUntil, `${days}_days`, targetUserId).run();
+  const accessUntil = await grantAccess(env, targetUserId, days, adminId);
   await env.DB.prepare(
     "UPDATE payments SET status = 'paid', paid_at = ?, comment = ? WHERE user_id = ? AND status = 'pending'"
   ).bind(kyivNow().datetime, `admin ${adminId}`, targetUserId).run();
-
-  console.log("[PAYMENT]", { user_id: targetUserId, tariff_days: days, amount: days === 7 ? 290 : 390, status: "paid" });
   await sendMessage(env, targetUserId, `Доступ відкрито 🚀\n\nДо: ${formatHumanDate(accessUntil)}`, MAIN_KEYBOARD, true);
 }
 
@@ -2112,28 +2149,36 @@ async function createPayment(db, userId, amount, tariffDays, status) {
   console.log("[PAYMENT]", { user_id: userId, tariff_days: tariffDays, amount, status });
 }
 
+// Одна активна заявка на юзера: той самий тариф — нічого не робимо; інший —
+// стару pending архівуємо як 'superseded' і створюємо нову.
 async function ensurePendingPayment(db, userId, amount, tariffDays) {
-  const pending = await db.prepare(
-    "SELECT id FROM payments WHERE user_id = ? AND tariff_days = ? AND status = 'pending' ORDER BY id DESC LIMIT 1"
-  ).bind(userId, tariffDays).first();
-  if (pending) return;
+  const existing = await db.prepare(
+    "SELECT id, tariff_days FROM payments WHERE user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1"
+  ).bind(userId).first();
+  if (existing && Number(existing.tariff_days) === tariffDays) return;
+  if (existing) {
+    await db.prepare("UPDATE payments SET status = 'superseded' WHERE user_id = ? AND status = 'pending'")
+      .bind(userId).run();
+  }
   await createPayment(db, userId, amount, tariffDays, "pending");
 }
 
-async function notifyAdmins(env, userId, username, tariff) {
+async function notifyAdmins(env, userId, username, payment) {
   const admins = parseIds(env.ADMIN_USER_IDS);
+  const days = Number(payment.tariff_days);
+  const amount = Number(payment.amount);
   for (const adminId of admins) {
     await sendMessage(env, adminId, [
       "Новий запит на доступ 💰",
       "",
       `user_id: ${userId}`,
       `username: ${username ? `@${username}` : "—"}`,
-      `тариф: ${tariff} днів`
+      `тариф: ${days} днів`,
+      `сума: ${amount} грн`
     ].join("\n"), {
       inline_keyboard: [
-        [{ text: "✅ 7 днів", callback_data: `confirm_7_${userId}` }],
-        [{ text: "✅ 30 днів", callback_data: `confirm_30_${userId}` }],
-        [{ text: "❌ Відхилити", callback_data: `reject_${userId}` }]
+        [{ text: `✅ Підтвердити (${days} дн / ${amount} грн)`, callback_data: `paycfm_${payment.id}` }],
+        [{ text: "❌ Відхилити", callback_data: `payrej_${payment.id}` }]
       ]
     }, true);
   }
