@@ -5,7 +5,8 @@ const MAIN_KEYBOARD = {
   keyboard: [
     [{ text: "➕ Додати витрату" }],
     [{ text: "📊 Статистика" }, { text: "💰 Бюджет" }],
-    [{ text: "✏️ Керувати витратами" }]
+    [{ text: "✏️ Керувати витратами" }],
+    [{ text: "💳 Мій доступ" }]
   ],
   resize_keyboard: true,
   is_persistent: true,
@@ -264,7 +265,8 @@ const MENU_BUTTONS = new Set([
   "📅 Обрати період",
   "✏️ Керувати витратами",
   "✏️ Редагувати витрату",
-  "🗑 Видалити витрату"
+  "🗑 Видалити витрату",
+  "💳 Мій доступ"
 ]);
 // Відповіді на промпти (сума, бюджет, період, редагування) — теж службові.
 const PROMPT_REPLY_STATES = new Set([
@@ -306,7 +308,7 @@ async function handleMessage(message, env) {
     if (isAdmin(env, userId) || hasActiveAccess(user)) {
       await sendMessage(env, chatId, startText(), MAIN_KEYBOARD);
     } else {
-      await sendMessage(env, chatId, `${startText()}\n\n${paywallText(user?.access_until)}`, paymentKeyboard(), true);
+      await sendMessage(env, chatId, `${startText()}\n\n${await paywallText(env, user)}`, paymentKeyboard(), true);
     }
     return;
   }
@@ -381,6 +383,12 @@ async function handleMessage(message, env) {
   if (text === "✏️ Керувати витратами") {
     await clearState(env.DB, userId);
     await sendServiceMessage(env, chatId, userId, manageExpensesText(), manageExpensesKeyboard());
+    return;
+  }
+
+  if (text === "💳 Мій доступ") {
+    await clearState(env.DB, userId);
+    await sendAccessView(env, chatId, userId);
     return;
   }
 
@@ -687,6 +695,12 @@ async function handleCallback(callback, env) {
     await setMonthlyBudget(env.DB, userId, null);
     await clearState(env.DB, userId);
     await editMessage(env, chatId, messageId, "Бюджет прибрано. Можеш встановити новий у меню «💰 Бюджет».");
+    return;
+  }
+
+  if (data === "access_extend") {
+    const pending = await getPendingPayment(env.DB, userId);
+    await editMessage(env, chatId, messageId, tariffBlock(env, pending), paymentKeyboard());
     return;
   }
 
@@ -2048,7 +2062,7 @@ async function ensureAccess(env, userId, chatId, callbackData = "") {
   if (user?.access_until) {
     await env.DB.prepare("UPDATE users SET status = 'expired' WHERE user_id = ? AND status != 'blocked'").bind(userId).run();
   }
-  await sendMessage(env, chatId, paywallText(user?.access_until), paymentKeyboard(), true);
+  await sendMessage(env, chatId, await paywallText(env, user), paymentKeyboard(), true);
   return false;
 }
 
@@ -2061,11 +2075,95 @@ function hasActiveAccess(user) {
   return new Date(user.access_until.replace(" ", "T")).getTime() > Date.now();
 }
 
-function paywallText(accessUntil) {
-  if (accessUntil && !hasActiveAccess({ access_until: accessUntil })) {
-    return "Доступ закінчився ⏳\n\nЩоб знову бачити статистику витрат,\nпродовжи доступ 👇";
+// Єдиний блок тарифів — використовується і в paywall, і в «Мій доступ»,
+// щоб не було двох різних версій тексту.
+function tariffBlock(env, pending) {
+  const payTarget = env.MONO_JAR_LINK
+    ? `Банка: ${env.MONO_JAR_LINK}`
+    : [`mono: ${env.MONO_CARD || "не задано"}`, `privat: ${env.PRIVAT_CARD || "не задано"}`].join("\n");
+  const lines = [
+    "💳 Тарифи:",
+    "290 грн — 7 днів",
+    "390 грн — 30 днів",
+    "",
+    "Що входить:",
+    "• необмежені витрати",
+    "• статистика і бюджет",
+    "• тижневі та місячні звіти",
+    "",
+    "Як платити:",
+    payTarget
+  ];
+  if (pending?.code) {
+    lines.push(
+      "",
+      `❗ Твій код: ${pending.code}`,
+      `Сума: ${Number(pending.amount)} грн (${Number(pending.tariff_days)} днів)`,
+      "Вкажи код у коментарі до переказу."
+    );
+  } else {
+    lines.push("", "Обери тариф нижче — я дам код платежу, який треба вказати в коментарі до переказу.");
   }
-  return "Доступ до бота платний 👇\n\n7 днів — 290 грн\n🔥 30 днів — 390 грн\n\n30 днів вигідніше — різниця лише 100 грн.\n\nОбери варіант:";
+  return lines.join("\n");
+}
+
+async function paywallText(env, user) {
+  const pending = await getPendingPayment(env.DB, String(user?.user_id || ""));
+  const expired = user?.access_until && !hasActiveAccess(user);
+  const intro = expired
+    ? "Доступ закінчився ⏳\n\nЩоб знову бачити статистику витрат, продовжи доступ 👇"
+    : "Доступ до бота платний 👇";
+  return `${intro}\n\n${tariffBlock(env, pending)}`;
+}
+
+function accessDaysLeft(user) {
+  if (!user?.access_until) return 0;
+  const end = parseDate(String(user.access_until).slice(0, 10));
+  const today = parseDate(kyivNow().date);
+  return Math.max(0, Math.round((end.getTime() - today.getTime()) / 86400000));
+}
+
+function tariffLabel(tariff) {
+  if (tariff === "7_days") return "7 днів";
+  if (tariff === "30_days") return "30 днів";
+  if (tariff === "trial") return "пробний";
+  return tariff || "—";
+}
+
+// Екран «Мій доступ»: службове повідомлення, вигляд залежить від статусу юзера.
+async function sendAccessView(env, chatId, userId) {
+  const user = await getUser(env.DB, userId);
+  const pending = await getPendingPayment(env.DB, userId);
+
+  if (hasActiveAccess(user) && user?.status === "trial") {
+    const text = [
+      "🎁 Безкоштовний тиждень",
+      "",
+      `Залишилось: ${accessDaysLeft(user)} дн`,
+      `Діє до: ${formatHumanDate(user.access_until)}`,
+      "",
+      tariffBlock(env, pending)
+    ].join("\n");
+    await sendServiceMessage(env, chatId, userId, text, paymentKeyboard());
+    return;
+  }
+
+  if (hasActiveAccess(user)) {
+    const text = [
+      "💳 Доступ активний ✅",
+      "",
+      `Діє до: ${formatHumanDate(user.access_until)}`,
+      `Залишилось: ${accessDaysLeft(user)} дн`,
+      `Тариф: ${tariffLabel(user.tariff)}`
+    ].join("\n");
+    await sendServiceMessage(env, chatId, userId, text, {
+      inline_keyboard: [[{ text: "💳 Продовжити доступ", callback_data: "access_extend" }]]
+    });
+    return;
+  }
+
+  const intro = user?.access_until ? "Доступ закінчився ⏳" : "Доступ ще не активний";
+  await sendServiceMessage(env, chatId, userId, `${intro}\n\n${tariffBlock(env, pending)}`, paymentKeyboard());
 }
 
 function paymentText(env, days, code) {
