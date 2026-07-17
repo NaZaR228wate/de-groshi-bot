@@ -150,6 +150,27 @@ export default {
     if (request.method === "GET" && url.pathname === "/health") {
       return json({ ok: true });
     }
+    // ТЕСТОВИЙ monobank-ендпоінт: лише логує сире тіло й повертає 200.
+    // Мета — переконатись, що поповнення банки шле webhook і що в ньому є коментар.
+    // Нічого не матчить і не грантить. Секрет URL — у env.MONO_WEBHOOK_SECRET.
+    if (env.MONO_WEBHOOK_SECRET && url.pathname === `/mono/${env.MONO_WEBHOOK_SECRET}`) {
+      if (request.method === "GET") {
+        // monobank шле GET-перевірку при реєстрації webhook — має отримати 200.
+        console.log("[MONO_TEST]", { method: "GET", note: "webhook verification ping" });
+        return json({ ok: true });
+      }
+      if (request.method === "POST") {
+        let body = "";
+        try {
+          body = await request.text();
+        } catch (error) {
+          console.log("[MONO_TEST_ERROR]", { error: String(error) });
+        }
+        console.log("[MONO_TEST]", { method: "POST", body });
+        return json({ ok: true });
+      }
+      return json({ ok: true });
+    }
     if (request.method !== "POST" || url.pathname !== "/webhook") {
       return new Response("Not found", { status: 404 });
     }
