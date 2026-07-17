@@ -2,6 +2,9 @@ name = "de-groshi-bot"
 main = "src/index.js"
 compatibility_date = "2026-06-24"
 
+[vars]
+TRIAL_DAYS = "7"
+
 [triggers]
 crons = ["0 7 * * *", "0 17 * * SUN"]
 
