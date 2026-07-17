@@ -692,8 +692,8 @@ async function handleCallback(callback, env) {
 
   if (data.startsWith("buy_")) {
     const days = Number(data.split("_")[1]);
-    await ensurePendingPayment(env.DB, userId, days === 7 ? 290 : 390, days);
-    await editMessage(env, chatId, messageId, paymentText(env, days), paidKeyboard(days));
+    const code = await ensurePendingPayment(env.DB, userId, days === 7 ? 290 : 390, days);
+    await editMessage(env, chatId, messageId, paymentText(env, days, code), paidKeyboard(days));
     return;
   }
 
@@ -2068,17 +2068,20 @@ function paywallText(accessUntil) {
   return "Доступ до бота платний 👇\n\n7 днів — 290 грн\n🔥 30 днів — 390 грн\n\n30 днів вигідніше — різниця лише 100 грн.\n\nОбери варіант:";
 }
 
-function paymentText(env, days) {
-  return [
+function paymentText(env, days, code) {
+  const lines = [
     "Для оплати:",
     "",
     `mono: ${env.MONO_CARD || "не задано"}`,
     `privat: ${env.PRIVAT_CARD || "не задано"}`,
     "",
-    `Тариф: ${days} днів`,
-    "",
-    "Після оплати натисни «✅ Я оплатив»"
-  ].join("\n");
+    `Тариф: ${days} днів`
+  ];
+  if (code) {
+    lines.push("", `❗ Вкажи код ${code} у коментарі до переказу —`, "так я впізнаю саме твою оплату.");
+  }
+  lines.push("", "Після оплати натисни «✅ Я оплатив»");
+  return lines.join("\n");
 }
 
 // Продовжує доступ юзеру на days днів від поточного кінця (або від сьогодні).
@@ -2159,29 +2162,55 @@ async function handleAdminPaymentAction(env, callback, data) {
 
 async function getPendingPayment(db, userId) {
   return db.prepare(
-    "SELECT id, amount, tariff_days FROM payments WHERE user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1"
+    "SELECT id, amount, tariff_days, code FROM payments WHERE user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1"
   ).bind(userId).first();
 }
 
+// Алфавіт коду платежу без схожих символів (0/O, 1/I/L).
+const PAYMENT_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+
+function generatePaymentCode() {
+  const bytes = crypto.getRandomValues(new Uint8Array(4));
+  let code = "";
+  for (let i = 0; i < 4; i++) {
+    code += PAYMENT_CODE_ALPHABET[bytes[i] % PAYMENT_CODE_ALPHABET.length];
+  }
+  return `DG-${code}`;
+}
+
+// Код, унікальний серед активних (pending) заявок — щоб матчинг по коду був однозначний.
+async function generateUniquePaymentCode(db) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = generatePaymentCode();
+    const clash = await db.prepare(
+      "SELECT 1 AS one FROM payments WHERE code = ? AND status = 'pending' LIMIT 1"
+    ).bind(code).first();
+    if (!clash) return code;
+  }
+  return generatePaymentCode();
+}
+
 async function createPayment(db, userId, amount, tariffDays, status) {
+  const code = await generateUniquePaymentCode(db);
   await db.prepare(
-    "INSERT INTO payments (user_id, amount, tariff_days, status, created_at, comment) VALUES (?, ?, ?, ?, ?, ?)"
-  ).bind(userId, amount, tariffDays, status, kyivNow().datetime, null).run();
-  console.log("[PAYMENT]", { user_id: userId, tariff_days: tariffDays, amount, status });
+    "INSERT INTO payments (user_id, amount, tariff_days, status, created_at, comment, code) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  ).bind(userId, amount, tariffDays, status, kyivNow().datetime, null, code).run();
+  console.log("[PAYMENT]", { user_id: userId, tariff_days: tariffDays, amount, status, code });
+  return code;
 }
 
 // Одна активна заявка на юзера: той самий тариф — нічого не робимо; інший —
 // стару pending архівуємо як 'superseded' і створюємо нову.
 async function ensurePendingPayment(db, userId, amount, tariffDays) {
   const existing = await db.prepare(
-    "SELECT id, tariff_days FROM payments WHERE user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1"
+    "SELECT id, tariff_days, code FROM payments WHERE user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1"
   ).bind(userId).first();
-  if (existing && Number(existing.tariff_days) === tariffDays) return;
+  if (existing && Number(existing.tariff_days) === tariffDays) return existing.code;
   if (existing) {
     await db.prepare("UPDATE payments SET status = 'superseded' WHERE user_id = ? AND status = 'pending'")
       .bind(userId).run();
   }
-  await createPayment(db, userId, amount, tariffDays, "pending");
+  return createPayment(db, userId, amount, tariffDays, "pending");
 }
 
 async function notifyAdmins(env, userId, username, payment) {
@@ -2195,7 +2224,8 @@ async function notifyAdmins(env, userId, username, payment) {
       `user_id: ${userId}`,
       `username: ${username ? `@${username}` : "—"}`,
       `тариф: ${days} днів`,
-      `сума: ${amount} грн`
+      `сума: ${amount} грн`,
+      `код: ${payment.code || "—"}`
     ].join("\n"), {
       inline_keyboard: [
         [{ text: `✅ Підтвердити (${days} дн / ${amount} грн)`, callback_data: `paycfm_${payment.id}` }],
