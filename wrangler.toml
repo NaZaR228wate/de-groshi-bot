@@ -4,6 +4,7 @@ compatibility_date = "2026-06-24"
 
 [vars]
 TRIAL_DAYS = "7"
+MONO_JAR_LINK = "https://send.monobank.ua/jar/6wncmBBWpi"
 
 [triggers]
 crons = ["0 7 * * *", "0 17 * * SUN"]
