@@ -232,9 +232,40 @@ async function handleUpdate(update, env) {
   }
 }
 
+// Тапи по цих кнопках-меню лишають у чаті повідомлення юзера — його прибираємо.
+const MENU_BUTTONS = new Set([
+  "⬅️ Назад",
+  "➕ Додати витрату",
+  "💰 Бюджет",
+  "📊 Статистика",
+  "📅 Обрати період",
+  "✏️ Керувати витратами",
+  "✏️ Редагувати витрату",
+  "🗑 Видалити витрату"
+]);
+// Відповіді на промпти (сума, бюджет, період, редагування) — теж службові.
+const PROMPT_REPLY_STATES = new Set([
+  WAITING_FOR_STATS_PERIOD,
+  "waiting_amount",
+  "waiting_edit_input",
+  "waiting_budget"
+]);
+
+// Прибирає вхідне повідомлення юзера; помилку глушимо (бот міг не мати прав
+// на видалення або юзер уже видалив сам). Текст витрати сюди не потрапляє.
+async function deleteIncomingMessage(env, chatId, messageId) {
+  if (!messageId) return;
+  try {
+    await deleteMessage(env, chatId, messageId);
+  } catch (error) {
+    console.log("[MSG_DELETE_ERROR]", { error: String(error) });
+  }
+}
+
 async function handleMessage(message, env) {
   const userId = String(message.from?.id || "");
   const chatId = String(message.chat?.id || "");
+  const messageId = message.message_id;
   const text = String(message.text || "").trim();
   const telegramUser = message.from || {};
   const username = telegramUser.username || "";
@@ -285,6 +316,11 @@ async function handleMessage(message, env) {
   }
 
   if (!(await ensureAccess(env, userId, chatId))) return;
+
+  // Тап по кнопці меню: прибираємо повідомлення юзера, лишається одне службове.
+  if (MENU_BUTTONS.has(text)) {
+    await deleteIncomingMessage(env, chatId, messageId);
+  }
 
   if (text === "⬅️ Назад") {
     await clearState(env.DB, userId);
@@ -338,6 +374,11 @@ async function handleMessage(message, env) {
   }
 
   const state = await getState(env.DB, userId);
+  // Відповідь на промпт (сума/бюджет/період/редагування) — службова, прибираємо.
+  // Вільний текст витрати не має активного стану і сюди не потрапляє.
+  if (PROMPT_REPLY_STATES.has(state?.state)) {
+    await deleteIncomingMessage(env, chatId, messageId);
+  }
   if (state?.state === WAITING_FOR_STATS_PERIOD) {
     await handleStatsPeriodInput(env, chatId, userId, text);
     return;
