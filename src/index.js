@@ -11,8 +11,10 @@ const MAIN_KEYBOARD = {
   is_persistent: true,
   input_field_placeholder: "Введи витрату або обери дію…"
 };
-// Reply-клавіатура ніколи не підміняється: всі промпти вводу лишають MAIN_KEYBOARD,
-// щоб не плодити повідомлення-відновлення меню.
+// MAIN_KEYBOARD носять лише «якірні» повідомлення, які ніколи не видаляються
+// (/start, підсумок мультидодавання, «Доступ відкрито», тижневий cron-звіт):
+// видалення повідомлення-носія знімає reply-клавіатуру в клієнті.
+// Службові повідомлення reply-клавіатуру НЕ несуть.
 const ADD_EXPENSE_SHORT_HINT = "✍️ Напиши витрату: назва і сума, наприклад: кава 80";
 
 const CRON_DAILY = "0 7 * * *";
@@ -351,7 +353,7 @@ async function handleMessage(message, env) {
 
   if (text === "📅 Обрати період") {
     await setState(env.DB, userId, WAITING_FOR_STATS_PERIOD, {});
-    await sendServiceMessage(env, chatId, userId, STATS_PERIOD_PROMPT, statsPeriodInputKeyboard());
+    await sendServiceMessage(env, chatId, userId, STATS_PERIOD_PROMPT);
     return;
   }
 
@@ -864,11 +866,11 @@ async function handleManualExpenseInput(env, chatId, userId, text) {
     if (parsed.title && !parsed.amount) {
       const category = await detectCategorySmart(env.DB, userId, parsed.title);
       await setState(env.DB, userId, "waiting_amount", { expense_title: parsed.title, category, date });
-      await sendServiceMessage(env, chatId, userId, `💸 Введи суму для «${capitalize(parsed.title)}»`, MAIN_KEYBOARD);
+      await sendServiceMessage(env, chatId, userId, `💸 Введи суму для «${capitalize(parsed.title)}»`);
       return;
     }
     if (!parsed.title) {
-      await sendServiceMessage(env, chatId, userId, "Спочатку напиши назву витрати, наприклад: кава 80", MAIN_KEYBOARD);
+      await sendServiceMessage(env, chatId, userId, "Спочатку напиши назву витрати, наприклад: кава 80");
       return;
     }
     const category = await detectCategorySmart(env.DB, userId, parsed.title);
@@ -885,8 +887,7 @@ async function handleManualExpenseInput(env, chatId, userId, text) {
   if (missing.length) {
     await sendServiceMessage(
       env, chatId, userId,
-      "У деяких витратах не бачу назву або суму. Напиши кожну як «назва сума», наприклад:\nкава 80, таксі 150",
-      MAIN_KEYBOARD
+      "У деяких витратах не бачу назву або суму. Напиши кожну як «назва сума», наприклад:\nкава 80, таксі 150"
     );
     return;
   }
@@ -926,7 +927,7 @@ async function handleManualExpenseInput(env, chatId, userId, text) {
 async function handleAmountInput(env, chatId, userId, text, data) {
   const amount = parseAmount(text);
   if (!amount) {
-    await sendServiceMessage(env, chatId, userId, "Введи тільки суму, наприклад 300 або 149.50", MAIN_KEYBOARD);
+    await sendServiceMessage(env, chatId, userId, "Введи тільки суму, наприклад 300 або 149.50");
     return;
   }
   await askExpenseType(env, chatId, userId, {
@@ -1010,18 +1011,18 @@ async function cleanupPendingExpenses(db) {
 async function handleBudgetInput(env, chatId, userId, text) {
   const amount = parseAmount(text);
   if (!amount) {
-    await sendServiceMessage(env, chatId, userId, "Введи суму бюджету числом, наприклад 20000", MAIN_KEYBOARD);
+    await sendServiceMessage(env, chatId, userId, "Введи суму бюджету числом, наприклад 20000");
     return;
   }
   await setMonthlyBudget(env.DB, userId, amount);
   await clearState(env.DB, userId);
-  await sendServiceMessage(env, chatId, userId, `💰 Бюджет на місяць встановлено: ${formatAmount(amount)} ${CURRENCY}`, MAIN_KEYBOARD);
+  await sendServiceMessage(env, chatId, userId, `💰 Бюджет на місяць встановлено: ${formatAmount(amount)} ${CURRENCY}`);
 }
 
 async function handleStatsPeriodInput(env, chatId, userId, text) {
   const range = parseStatsPeriodInput(text);
   if (!range) {
-    await sendServiceMessage(env, chatId, userId, STATS_PERIOD_ERROR, statsPeriodInputKeyboard());
+    await sendServiceMessage(env, chatId, userId, STATS_PERIOD_ERROR);
     return;
   }
   await showCustomStats(env, chatId, null, userId, range);
@@ -1031,7 +1032,7 @@ async function handleEditExpenseInput(env, chatId, userId, text, data) {
   const { date, items } = parseExpensesMessage(text);
   const parsed = items.length === 1 ? items[0] : null;
   if (!parsed?.title || !parsed?.amount) {
-    await sendServiceMessage(env, chatId, userId, "Напиши назву і суму, наприклад: кава 100", MAIN_KEYBOARD);
+    await sendServiceMessage(env, chatId, userId, "Напиши назву і суму, наприклад: кава 100");
     return;
   }
 
@@ -1041,7 +1042,7 @@ async function handleEditExpenseInput(env, chatId, userId, text, data) {
   const resultText = updated
     ? `✅ Оновлено\n\n${capitalize(cleanExpenseTitle(parsed.title))} — ${formatAmount(parsed.amount)} ${CURRENCY} • ${formatCategory(category)}`
     : "Витрату не знайдено";
-  await sendServiceMessage(env, chatId, userId, resultText, MAIN_KEYBOARD);
+  await sendServiceMessage(env, chatId, userId, resultText);
 }
 
 // Розбирає повідомлення: дата («вчора», «1 липня»), кілька витрат через кому чи з нового рядка.
@@ -1320,7 +1321,8 @@ async function sendWeeklyReports(env) {
     try {
       const report = await buildPeriodReport(env.DB, user.user_id, range, "📬 Твій тижневий звіт");
       if (!report) continue;
-      await sendMessage(env, user.chat_id, report, undefined, true);
+      // Якір-авторемонт: звіт не видаляється, тож раз на тиждень відновлює клавіатуру.
+      await sendMessage(env, user.chat_id, report, MAIN_KEYBOARD, true);
     } catch (error) {
       console.log("[CRON_ERROR]", { user_id: user.user_id, error: String(error) });
     }
@@ -1474,7 +1476,7 @@ async function getExpensesByDate(db, userId, date) {
 async function sendManageDates(env, chatId, userId, mode) {
   const dates = await getExpenseDates(env.DB, userId);
   if (!dates.length) {
-    await sendServiceMessage(env, chatId, userId, "Витрат поки немає", MAIN_KEYBOARD);
+    await sendServiceMessage(env, chatId, userId, "Витрат поки немає");
     return;
   }
   const title = mode === "edit" ? "✏️ Редагування" : "🗑 Видалення";
@@ -1912,10 +1914,6 @@ function statsKeyboard() {
       [{ text: "⬅️ Назад", callback_data: "stats_main_back" }]
     ]
   };
-}
-
-function statsPeriodInputKeyboard() {
-  return MAIN_KEYBOARD;
 }
 
 function categoryDetailsKeyboard(categories, scope) {
