@@ -1,6 +1,14 @@
 ﻿const TELEGRAM_API = "https://api.telegram.org/bot";
 const CURRENCY = "грн";
 
+// Єдине джерело тарифів. Наступна зміна цін/строків — тільки тут.
+const TARIFFS = [
+  { days: 30, price: 299, label: "30 днів" },
+  { days: 180, price: 599, label: "180 днів (6 міс)" },
+  { days: 365, price: 1100, label: "365 днів (рік)" }
+];
+const TARIFF_BY_DAYS = new Map(TARIFFS.map((tariff) => [tariff.days, tariff]));
+
 const MAIN_KEYBOARD = {
   keyboard: [
     [{ text: "➕ Додати витрату" }],
@@ -329,7 +337,7 @@ async function handleMessage(message, env) {
       await sendMessage(env, chatId, "Доступ обмежено", undefined, true);
       return;
     }
-    // Тариф береться з заявки, створеної кнопкою buy_7/buy_30, — без вигаданих 390/30.
+    // Тариф береться з заявки, створеної кнопкою тарифу, — без вигаданих сум.
     const pending = await getPendingPayment(env.DB, userId);
     if (!pending) {
       await sendMessage(env, chatId, "Спочатку обери тариф 👇", paymentKeyboard(), true);
@@ -706,15 +714,18 @@ async function handleCallback(callback, env) {
 
   if (data.startsWith("buy_")) {
     const days = Number(data.split("_")[1]);
-    const code = await ensurePendingPayment(env.DB, userId, days === 7 ? 290 : 390, days);
-    await editMessage(env, chatId, messageId, paymentText(env, days, code), paidKeyboard(days));
+    const tariff = TARIFF_BY_DAYS.get(days);
+    if (!tariff) return;
+    const code = await ensurePendingPayment(env.DB, userId, tariff.price, tariff.days);
+    await editMessage(env, chatId, messageId, paymentText(env, tariff, code), paidKeyboard(days));
     return;
   }
 
   if (data === "paid" || data.startsWith("paid_")) {
     const chosenDays = data.includes("_") ? Number(data.split("_")[1]) : 0;
-    if (chosenDays === 7 || chosenDays === 30) {
-      await ensurePendingPayment(env.DB, userId, chosenDays === 7 ? 290 : 390, chosenDays);
+    const chosen = TARIFF_BY_DAYS.get(chosenDays);
+    if (chosen) {
+      await ensurePendingPayment(env.DB, userId, chosen.price, chosen.days);
     }
     // Голий "paid" тарифу не несе — беремо актуальну (єдину) заявку юзера.
     const pending = await getPendingPayment(env.DB, userId);
@@ -765,9 +776,9 @@ async function handleAdminTextCommand(env, adminId, chatId, text) {
   }
 
   if (command === "/grant") {
-    const days = Number(daysText || 30);
-    if (![7, 30].includes(days)) {
-      await sendMessage(env, chatId, "Дні мають бути 7 або 30", undefined, true);
+    const days = Number(daysText || TARIFFS[0].days);
+    if (!TARIFF_BY_DAYS.has(days)) {
+      await sendMessage(env, chatId, `Дні мають бути: ${TARIFFS.map((t) => t.days).join(", ")}`, undefined, true);
       return;
     }
     const targetUser = await getUser(env.DB, targetUserId);
@@ -2013,13 +2024,11 @@ function quickSubcategoryKeyboard(category) {
 }
 
 function paymentKeyboard() {
-  return {
-    inline_keyboard: [
-      [{ text: "💳 7 днів — 290 грн", callback_data: "buy_7" }],
-      [{ text: "🔥 30 днів — 390 грн", callback_data: "buy_30" }],
-      [{ text: "✅ Я оплатив", callback_data: "paid" }]
-    ]
-  };
+  const rows = TARIFFS.map((tariff) => [
+    { text: `${tariff.price} грн — ${tariff.label}`, callback_data: `buy_${tariff.days}` }
+  ]);
+  rows.push([{ text: "✅ Я оплатив", callback_data: "paid" }]);
+  return { inline_keyboard: rows };
 }
 
 function paidKeyboard(days) {
@@ -2083,8 +2092,7 @@ function tariffBlock(env, pending) {
     : [`mono: ${env.MONO_CARD || "не задано"}`, `privat: ${env.PRIVAT_CARD || "не задано"}`].join("\n");
   const lines = [
     "💳 Тарифи:",
-    "290 грн — 7 днів",
-    "390 грн — 30 днів",
+    ...TARIFFS.map((tariff) => `${tariff.price} грн — ${tariff.label}`),
     "",
     "Що входить:",
     "• необмежені витрати",
@@ -2124,9 +2132,12 @@ function accessDaysLeft(user) {
 }
 
 function tariffLabel(tariff) {
-  if (tariff === "7_days") return "7 днів";
-  if (tariff === "30_days") return "30 днів";
   if (tariff === "trial") return "пробний";
+  const match = /^(\d+)_days$/.exec(String(tariff || ""));
+  if (match) {
+    const days = Number(match[1]);
+    return TARIFF_BY_DAYS.get(days)?.label || `${days} днів`;
+  }
   return tariff || "—";
 }
 
@@ -2166,14 +2177,14 @@ async function sendAccessView(env, chatId, userId) {
   await sendServiceMessage(env, chatId, userId, `${intro}\n\n${tariffBlock(env, pending)}`, paymentKeyboard());
 }
 
-function paymentText(env, days, code) {
+function paymentText(env, tariff, code) {
   const lines = [
     "Для оплати:",
     "",
     `mono: ${env.MONO_CARD || "не задано"}`,
     `privat: ${env.PRIVAT_CARD || "не задано"}`,
     "",
-    `Тариф: ${days} днів`
+    `Тариф: ${tariff.label} — ${tariff.price} грн`
   ];
   if (code) {
     lines.push("", `❗ Вкажи код ${code} у коментарі до переказу —`, "так я впізнаю саме твою оплату.");
