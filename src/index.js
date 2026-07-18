@@ -306,9 +306,9 @@ async function handleMessage(message, env) {
       return;
     }
     if (isAdmin(env, userId) || hasActiveAccess(user)) {
-      await sendMessage(env, chatId, startText(), MAIN_KEYBOARD);
+      await sendMessage(env, chatId, startText(user), MAIN_KEYBOARD);
     } else {
-      await sendMessage(env, chatId, `${startText()}\n\n${await paywallText(env, user)}`, paymentKeyboard(), true);
+      await sendMessage(env, chatId, `${startText(user)}\n\n${await paywallText(env, user)}`, paymentKeyboard(), true);
     }
     return;
   }
@@ -2508,18 +2508,32 @@ async function telegram(env, method, payload) {
   return response.json().catch(() => null);
 }
 
-function startText() {
-  return [
+function startText(user) {
+  const lines = [
     "Вітаю! 👋",
     "",
     "Тепер витрати будуть під контролем.",
     "",
     "Ти побачиш, куди йдуть гроші: за тиждень, місяць і рік — загалом та по категоріях.",
     "",
-    "Окремо покажу емоційні витрати та чи не перевищують вони 30% від усіх витрат.",
+    "Окремо покажу емоційні витрати та чи не перевищують вони 30% від усіх витрат."
+  ];
+  // Подарунок бачить лише свіжий триал-юзер з активним доступом,
+  // не платні й не прострочені.
+  if (user?.status === "trial" && hasActiveAccess(user)) {
+    lines.push(
+      "",
+      `🎁 Тобі відкрито безкоштовний тиждень — до ${formatHumanDate(user.access_until)}.`,
+      "Все працює без обмежень, картку прив'язувати не треба."
+    );
+  }
+  lines.push(
     "",
-    "Щоб почати, натисни «➕ Додати витрату»."
-  ].join("\n");
+    "Щоб почати, натисни «➕ Додати витрату».",
+    "",
+    "Залишок днів і деталі доступу — у розділі «💳 Мій доступ»."
+  );
+  return lines.join("\n");
 }
 
 function stripEmoji(text) {
