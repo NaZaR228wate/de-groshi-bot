@@ -28,6 +28,7 @@ const ADD_EXPENSE_SHORT_HINT = "✍️ Напиши витрату: назва �
 
 const CRON_DAILY = "0 7 * * *";
 const CRON_WEEKLY = "0 17 * * SUN";
+const CRON_MONO = "*/2 * * * *";
 const WAITING_FOR_STATS_PERIOD = "waiting_for_stats_period";
 const STATS_PERIOD_PROMPT = [
   "Введи період у форматі:",
@@ -347,6 +348,11 @@ export default {
 
   async scheduled(controller, env) {
     console.log("[CRON]", { cron: controller.cron });
+    // Страхувальна сітка: вебхук міг не дійти або впертись у throttle — добираємо виписку.
+    if (controller.cron === CRON_MONO) {
+      await pollJarAndGrant(env);
+      return;
+    }
     if (controller.cron === CRON_WEEKLY) {
       await sendWeeklyReports(env);
       return;
@@ -395,6 +401,7 @@ async function pollJarAndGrant(env) {
     console.log("[MONO_ERROR]", { action: "poll", error: "MONO_TOKEN/MONO_JAR_ID не задані" });
     return;
   }
+  if (!(await hasFreshPendingPayment(env.DB))) return;  // нікому нічого підтверджувати
   if (!(await claimMonoPoll(env.DB))) {
     console.log("[MONO]", { skip: "poll throttled (<60s)" });
     return;
@@ -477,15 +484,29 @@ async function claimMonoTx(db, txId) {
 async function claimMonoPoll(db) {
   const now = Math.floor(Date.now() / 1000);
   try {
-    const row = await db.prepare("SELECT last_pull_at FROM mono_poll WHERE id = 1").first();
-    if (row && Number(row.last_pull_at) > now - 60) return false;
-    await db.prepare(
-      "INSERT INTO mono_poll (id, last_pull_at) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET last_pull_at = excluded.last_pull_at"
-    ).bind(now).run();
-    return true;
+    await db.prepare("INSERT OR IGNORE INTO mono_poll (id, last_pull_at) VALUES (1, 0)").run();
+    // Одна атомарна умовна UPDATE: два паралельні виклики не можуть обидва виграти.
+    const result = await db.prepare(
+      "UPDATE mono_poll SET last_pull_at = ? WHERE id = 1 AND last_pull_at <= ?"
+    ).bind(now, now - 60).run();
+    return Number(result.meta?.changes || 0) > 0;
   } catch (error) {
     console.log("[MONO_ERROR]", { action: "claim_poll", error: String(error) });
     return false;
+  }
+}
+
+// Виписка покриває лише 24 год, тож старіші заявки однаково не зіставити.
+async function hasFreshPendingPayment(db) {
+  try {
+    const cutoff = `${formatDate(addDays(parseDate(kyivNow().date), -1))} 00:00:00`;
+    const row = await db.prepare(
+      "SELECT 1 FROM payments WHERE status = 'pending' AND created_at >= ? LIMIT 1"
+    ).bind(cutoff).first();
+    return Boolean(row);
+  } catch (error) {
+    console.log("[MONO_ERROR]", { action: "has_pending", error: String(error) });
+    return true;  // не знаємо — краще опитати, ніж загубити платіж
   }
 }
 
