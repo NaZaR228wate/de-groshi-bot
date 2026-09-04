@@ -69,6 +69,7 @@ const CATEGORY_LABELS = {
   home: "🏠 Дім",
   health: "💊 Здоров’я",
   kids: "👶 Діти",
+  education: "📚 Навчання",
   fun: "🎮 Розваги",
   other: "📦 Інше"
 };
@@ -116,6 +117,14 @@ const SUBCATEGORIES = {
     ["school", "📚 Школа"],
     ["kids_clothes", "👕 Одяг дітям"]
   ],
+  education: [
+    ["courses", "🎓 Курси"],
+    ["tutor", "👨‍🏫 Репетитор"],
+    ["books", "📕 Підручники"],
+    ["stationery", "✏️ Канцтовари"],
+    ["driving", "🚗 Автошкола"],
+    ["languages", "🗣 Мовні курси"]
+  ],
   fun: [
     ["cinema", "🎬 Кіно"],
     ["games", "🎮 Ігри"],
@@ -131,17 +140,135 @@ const SUBCATEGORY_TITLES = Object.fromEntries(
   )
 );
 
-// Порядок категорій важливий: перевірка йде зверху вниз,
-// специфічніші категорії стоять вище (напр. "магазин" містить "газ").
-const CATEGORY_KEYWORDS = {
-  health: ["лік", "таблет", "аптек", "стоматолог", "аналіз", "клінік", "медиц", "медич", "зуб", "вітамін", "терапевт", "педіатр", "окуляр", "лінз", "масаж", "психолог", "щеплен"],
-  transport: ["бензин", "бенз", "паливо", "заправ", "окко", "wog", "таксі", "uber", "uklon", "уклон", "bolt", "болт", "метро", "автобус", "маршрутк", "електричк", "потяг", "поїзд", "квиток", "сто", "шиномонтаж", "автомийк", "мийк", "парковк", "стоянк", "автоцивілк", "страховк", "транспорт"],
-  kids: ["дит", "діти", "школ", "садок", "садоч", "кишеньков", "іграш", "англійськ", "гурток", "репетитор", "памперс", "підгузк", "шоколадк", "солодке"],
-  food: ["кава", "чай", "піц", "продукт", "ресторан", "кафе", "їдальн", "суші", "шаурм", "бургер", "морозив", "макдон", "mcdonald", "kfc", "атб", "сільпо", "сильпо", "новус", "novus", "варус", "фора", "ашан", "їжа", "обід", "вечер", "сніданок", "напій", "напої", "хліб", "молок", "мясо", "м'ясо", "м’ясо", "овоч", "фрукт", "торт", "випічк", "бакалі"],
-  shopping: ["одяг", "плаття", "сукн", "взутт", "кросівк", "куртк", "джинс", "футболк", "технік", "телевізор", "ноутбук", "навушник", "подарун", "квіти", "косметик", "парфум", "шампун", "магазин", "побутов", "хімі", "rozetka", "розетка", "aliexpress", "покупк", "канцеляр"],
-  fun: ["кіно", "театр", "концерт", "ігри", "гейм", "playstation", "steam", "відпочинок", "музик", "бар", "клуб", "боулінг", "квест", "хобі", "книг", "спортзал", "абонемент", "басейн", "розваг", "пиво", "вино"],
-  home: ["комунал", "оренд", "квартплат", "квартир", "будинок", "дім", "інтернет", "internet", "wifi", "вай-фай", "зв'язок", "зв’язок", "звязок", "мобільн", "телефон", "поповненн", "київстар", "kyivstar", "lifecell", "лайф", "vodafone", "водафон", "світло", "електро", "газ", "вода", "опаленн", "сміття", "домофон", "охорон", "меблі", "ремонт", "підписк", "netflix", "spotify", "youtube"]
+// Єдине джерело правил категоризації. Доповнювати — тільки тут.
+//   brands  — назви мереж/сервісів (найвищий пріоритет),
+//   phrases — багатослівні маркери («корм для кота»),
+//   ru      — русизми й суржик (та сама вага, що корені),
+//   roots   — корені слів; матчаться як ПРЕФІКС токена, тому «кав» ловить
+//             «кава/кави/каву»,
+//   exact   — слова, що матчаться лише цілком (щоб «газ» не ловив «газету»,
+//             «бар» — «барбер», а «сто» — «столик»).
+// Порядок категорій — тайбрейкер при однаковій вазі збігу.
+const CATEGORY_RULES = {
+  health: {
+    brands: ["аптека доброго дня", "подорожник", "анц", "бажаємо здоровя"],
+    phrases: ["прийом лікаря", "візит до лікаря", "здача аналізів", "запис до лікаря"],
+    // Русизми й суржик — люди пишуть по-різному.
+    ru: ["лекарств", "аптеч", "врач", "болниц", "зубной", "стрижк"],
+    // Послуги догляду — сюди ж (це догляд за собою, а не речі).
+    roots: ["лік", "таблет", "аптек", "стоматолог", "аналіз", "клінік", "медиц", "медич", "зуб", "вітамін", "терапевт", "педіатр", "окуляр", "лінз", "масаж", "психолог", "щеплен", "стрижк", "манікюр", "педикюр", "барбер", "косметолог", "спа", "епіляц", "брів", "перукар"]
+  },
+  // Навчання стоїть ВИЩЕ за kids і містить лише однозначні освітні маркери
+  // («автошкол», «мовн»), тож голе «школа» лишається в Діти.
+  education: {
+    phrases: ["мовна школа", "школа програмування", "курси водіння", "оплата за навчання", "підготовка до нмт", "оплата за курси"],
+    ru: ["обучен", "образован", "курс", "репетитор", "университет", "учебник", "тетрад", "канцтовар"],
+    roots: ["навчанн", "освіт", "курс", "репетитор", "університет", "інститут", "коледж", "автошкол", "підручник", "канцтовар", "канцеляр", "зошит", "лекці", "семінар", "тренінг", "вебінар", "студент", "іспит", "диплом", "мовн", "duolingo", "coursera", "udemy", "prometheus"]
+  },
+  transport: {
+    brands: ["wog", "okko", "окко", "shell", "shel", "bolt", "болт", "uklon", "uklon", "уклон", "uber", "убер", "socar", "укрнафта"],
+    phrases: ["квитки на потяг", "квиток на потяг", "мийка авто", "страховка авто", "техогляд авто", "проїзд у метро", "заправка авто", "ремонт авто"],
+    ru: ["бензін", "заправк", "такси", "проезд", "автобус", "поезд", "билет", "парковк", "мойка", "штраф"],
+    exact: ["сто"],
+    roots: ["бензин", "бенз", "паливо", "заправ", "окко", "wog", "таксі", "uber", "uklon", "уклон", "bolt", "болт", "метро", "автобус", "маршрутк", "електричк", "потяг", "поїзд", "квиток", "квитк", "шиномонтаж", "автомийк", "мийк", "парковк", "паркув", "стоянк", "автоцивілк", "страховк", "транспорт", "штраф", "евакуатор", "техогляд", "автосервіс", "шини", "олив"]
+  },
+  kids: {
+    phrases: ["оплата за садок", "плата за садок", "шкільні обіди", "форма для школи", "внески в школу", "гурток малювання"],
+    ru: ["детск", "ребенк", "игрушк", "садик", "подгузник", "школьн"],
+    roots: ["дит", "діт", "школ", "шкіл", "садок", "садоч", "садк", "кишеньков", "іграш", "англійськ", "гурток", "гуртк", "памперс", "підгузк", "шоколадк", "солодк"]
+  },
+  food: {
+    brands: [
+      "атб", "сільпо", "сильпо", "novus", "новус", "ашан", "auchan", "varus", "варус",
+      "fozzy", "фоззі", "фора", "метро кеш", "megamarket", "мегамаркет",
+      "mcdonalds", "макдональдз", "макдоналдс", "мак", "kfc", "домінос", "dominos",
+      "пузата хата", "львівські круасани", "aroma kava", "арома кава", "glovo", "глово",
+      "bolt food", "болт фуд", "raketa", "ракета", "wolt", "сушия", "sushiya"
+    ],
+    phrases: ["кава з собою", "бізнес ланч", "їжа на виніс", "обід на роботі", "продукти на тиждень"],
+    ru: ["продукт", "хлеб", "молок", "мясо", "конфет", "печенье", "чипс", "мороженое", "кофе", "еда", "обед", "ужин", "завтрак"],
+    exact: ["чай"],
+    roots: ["кав", "піц", "продукт", "ресторан", "кафе", "їдальн", "суші", "шаурм", "бургер", "морозив", "макдон", "mcdonald", "kfc", "атб", "сільпо", "сильпо", "новус", "novus", "варус", "фора", "ашан", "їж", "обід", "вечер", "сніданок", "напій", "напо", "хліб", "молок", "мясо", "овоч", "фрукт", "торт", "випічк", "бакалі", "чіпс", "снек", "шоколад", "цукерк", "печив", "жуйк", "сухарик", "горішк", "йогурт", "сир", "яйц", "крупа", "макарон", "олія", "цукор", "сіль", "сік", "вафл", "перекус"]
+  },
+  shopping: {
+    brands: [
+      "rozetka", "розетка", "епіцентр", "epicentr", "comfy", "комфі", "foxtrot", "фокстрот",
+      "aliexpress", "алиэкспресс", "нова пошта", "новапошта", "укрпошта", "ukrposhta",
+      "jysk", "юск", "ikea", "sinsay", "reserved", "zara", "hm", "temu", "prom ua"
+    ],
+    phrases: ["корм для кота", "корм для собаки", "зубна паста", "туалетний папір", "засіб для прання"],
+    ru: ["одежд", "обув", "магазин", "подарок", "косметик", "духи", "шампун", "техник", "покупк", "сигарет"],
+    roots: ["одяг", "одеж", "плаття", "сукн", "взутт", "кросівк", "куртк", "джинс", "футболк", "технік", "телевізор", "ноутбук", "навушник", "подарун", "квіт", "косметик", "парфум", "шампун", "магазин", "побутов", "хімі", "rozetka", "розетк", "aliexpress", "покупк", "сигарет", "цигарк", "зубна", "паста", "гель", "мило", "дезодорант", "бритв", "корм", "наповнювач", "іграшка коту"]
+  },
+  fun: {
+    // Стрімінг і розваги — те, від чого можна відмовитись завтра.
+    brands: [
+      "netflix", "нетфлікс", "spotify", "спотіфай", "youtube premium", "ютуб преміум",
+      "megogo", "мегого", "steam", "стім", "playstation", "плейстейшн", "psn",
+      "apple music", "apple tv", "hbo", "hbo max", "disney", "disney plus",
+      "multiplex", "мультиплекс", "планета кіно", "planeta kino", "xbox", "twitch"
+    ],
+    phrases: ["квитки в кіно", "квиток у кіно", "похід у кіно", "абонемент у спортзал"],
+    ru: ["кино", "театр", "концерт", "игр", "отдых", "музык", "спортзал", "бассейн", "пив", "вино", "подписк"],
+    exact: ["бар"],
+    roots: ["кіно", "театр", "концерт", "ігр", "гейм", "playstation", "steam", "відпочинок", "музик", "клуб", "боулінг", "квест", "хобі", "книг", "спортзал", "абонемент", "басейн", "розваг", "пив", "вино"]
+  },
+  home: {
+    // Дім — без чого квартира не функціонує (зв'язок і комуналка сюди).
+    brands: ["київстар", "kyivstar", "vodafone", "водафон", "lifecell", "лайфселл", "starlink", "старлінк", "ukrtelecom", "укртелеком", "yasno", "ясно", "нафтогаз"],
+    phrases: ["пральний порошок", "мішки для сміття", "домашній інтернет", "комунальні послуги", "плата за світло", "оренда квартири"],
+    ru: ["комуналк", "аренд", "квартир", "свет", "вода", "отоплен", "мусор", "мебел", "ремонт", "порошок", "лампочк", "батарейк", "салфетк", "пакет"],
+    exact: ["газ", "дім", "вода"],
+    roots: ["комунал", "оренд", "квартплат", "квартир", "будинок", "інтернет", "internet", "wifi", "звязок", "мобільн", "телефон", "поповненн", "київстар", "kyivstar", "lifecell", "лайф", "vodafone", "водафон", "світло", "електро", "опаленн", "сміття", "домофон", "охорон", "меблі", "ремонт", "підписк", "батарейк", "лампочк", "лампа", "порошок", "серветк", "пакет", "мішки для сміття", "губк", "швабр", "відро", "посуд", "рушник", "постіл", "штор", "цвях", "інструмент"]
+  },
+  // Банківські операції — свідомо «Інше», щоб не перекошувати інші категорії.
+  other: {
+    brands: ["monobank", "монобанк", "приват", "privat", "privatbank", "sense bank", "sense superapp"],
+    phrases: ["обслуговування картки", "комісія за переказ", "конвертація валюти"],
+    roots: ["комісі", "переказ", "конвертаці"]
+  }
 };
+
+// Вага збігу: точний бренд > фраза > корінь слова > нечіткий (одруківка).
+const MATCH_RANK = { brand: 3, phrase: 2, root: 1, fuzzy: 0 };
+
+// Індекси будуються один раз при старті ізоляту, а не на кожну витрату.
+const PHRASE_ENTRIES = [];            // багатослівні маркери
+const ROOT_INDEX = new Map();         // корінь -> { category, rank }
+const ROOTS_BY_LENGTH = new Map();    // довжина -> корені (для fuzzy)
+
+function normalizeForMatch(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/['’`ʼ]/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+function addCategoryEntry(text, category, kind, exactOnly = false) {
+  const value = normalizeForMatch(text);
+  if (!value) return;
+  if (value.includes(" ")) {
+    PHRASE_ENTRIES.push({ text: value, category, rank: MATCH_RANK[kind] });
+    return;
+  }
+  if (!ROOT_INDEX.has(value)) ROOT_INDEX.set(value, { category, rank: MATCH_RANK[kind], exactOnly });
+  if (value.length >= 5 && !exactOnly) {
+    const bucket = ROOTS_BY_LENGTH.get(value.length) || [];
+    bucket.push(value);
+    ROOTS_BY_LENGTH.set(value.length, bucket);
+  }
+}
+
+for (const [category, rules] of Object.entries(CATEGORY_RULES)) {
+  for (const brand of rules.brands || []) addCategoryEntry(brand, category, "brand");
+  for (const phrase of rules.phrases || []) addCategoryEntry(phrase, category, "phrase");
+  for (const word of rules.exact || []) addCategoryEntry(word, category, "root", true);
+  for (const root of rules.roots || []) addCategoryEntry(root, category, "root");
+  for (const root of rules.ru || []) addCategoryEntry(root, category, "root");
+}
+// Довші фрази перевіряємо першими — «bolt food» має виграти в «bolt».
+PHRASE_ENTRIES.sort((a, b) => b.text.length - a.text.length);
 
 const MONTHS = [
   "січень", "лютий", "березень", "квітень", "травень", "червень",
@@ -154,28 +281,31 @@ const MONTHS_GENITIVE = [
 ];
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
       return json({ ok: true });
     }
-    // ТЕСТОВИЙ monobank-ендпоінт: лише логує сире тіло й повертає 200.
-    // Мета — переконатись, що поповнення банки шле webhook і що в ньому є коментар.
-    // Нічого не матчить і не грантить. Секрет URL — у env.MONO_WEBHOOK_SECRET.
+    // monobank-webhook: тіло НЕ авторитетне (немає підпису) — лише тригер. Відповідаємо
+    // 200 одразу (mono має 5с), а звірку робимо асинхронно проти виписки з mono API.
     if (env.MONO_WEBHOOK_SECRET && url.pathname === `/mono/${env.MONO_WEBHOOK_SECRET}`) {
       if (request.method === "GET") {
         // monobank шле GET-перевірку при реєстрації webhook — має отримати 200.
-        console.log("[MONO_TEST]", { method: "GET", note: "webhook verification ping" });
         return json({ ok: true });
       }
       if (request.method === "POST") {
-        let body = "";
+        let body = null;
         try {
-          body = await request.text();
+          body = await request.json();
         } catch (error) {
-          console.log("[MONO_TEST_ERROR]", { error: String(error) });
+          console.log("[MONO_ERROR]", { action: "parse_body", error: String(error) });
+          return json({ ok: true });
         }
-        console.log("[MONO_TEST]", { method: "POST", body });
+        ctx.waitUntil(
+          handleMonoWebhook(env, body).catch((error) =>
+            console.log("[MONO_ERROR]", { action: "handle", error: String(error) })
+          )
+        );
         return json({ ok: true });
       }
       return json({ ok: true });
@@ -224,6 +354,7 @@ export default {
     await sendAccessReminders(env);
     await cleanupProcessedUpdates(env.DB);
     await cleanupPendingExpenses(env.DB);
+    await cleanupMonoProcessed(env.DB);
     if (kyivNow().date.slice(8, 10) === "01") {
       await sendMonthlyReports(env);
     }
@@ -241,6 +372,129 @@ async function claimUpdate(db, updateId) {
     // Таблиці може ще не бути (міграцію не застосовано) — тоді не блокуємо обробку.
     console.log("[WEBHOOK_ERROR]", { action: "claim_update", error: String(error) });
     return true;
+  }
+}
+
+// ── monobank авто-підтвердження (варіант B: webhook = тригер, дані з mono API) ──
+const MONO_API = "https://api.monobank.ua";
+
+// Тіло webhook не авторитетне — лише перевіряємо, що подія стосується нашої банки
+// й це вхідне поповнення, після чого тягнемо авторитетну виписку.
+async function handleMonoWebhook(env, body) {
+  const account = body?.data?.account;
+  const item = body?.data?.statementItem;
+  if (account !== env.MONO_JAR_ID) return;         // не наша банка (напр., списання з картки)
+  if (!item || Number(item.amount) <= 0) return;   // не вхідне поповнення
+  await pollJarAndGrant(env);
+}
+
+// Тягне виписку банки з mono API і обробляє нові зарахування.
+// Пулли throttle до 1/60с, щоб не впертись у ліміт 429.
+async function pollJarAndGrant(env) {
+  if (!env.MONO_TOKEN || !env.MONO_JAR_ID) {
+    console.log("[MONO_ERROR]", { action: "poll", error: "MONO_TOKEN/MONO_JAR_ID не задані" });
+    return;
+  }
+  if (!(await claimMonoPoll(env.DB))) {
+    console.log("[MONO]", { skip: "poll throttled (<60s)" });
+    return;
+  }
+  const from = Math.floor(Date.now() / 1000) - 24 * 3600;
+  const resp = await fetch(`${MONO_API}/personal/statement/${env.MONO_JAR_ID}/${from}`, {
+    headers: { "X-Token": env.MONO_TOKEN }
+  });
+  if (!resp.ok) {
+    console.log("[MONO_ERROR]", { action: "statement", status: resp.status });
+    return;
+  }
+  const items = await resp.json().catch(() => null);
+  if (!Array.isArray(items)) {
+    console.log("[MONO_ERROR]", { action: "statement", error: "unexpected payload" });
+    return;
+  }
+  for (const item of items) {
+    await processJarItem(env, item);
+  }
+}
+
+// Один рядок виписки → доступ, лише якщо: зараховано (hold=false), вхідне (amount>0),
+// валюта UAH, є код активної заявки, і сума покриває тариф. Дедуп по statementItem.id.
+async function processJarItem(env, item) {
+  const txId = item?.id;
+  if (!txId) return;
+  if (item.hold === true) return;                                      // ще не зараховано — НЕ грантимо
+  if (Number(item.amount) <= 0) return;                                // не вхідне
+  if (item.currencyCode && Number(item.currencyCode) !== 980) return;  // не гривня
+  const code = extractPaymentCode(item.comment);
+  if (!code) return;
+
+  const payment = await env.DB.prepare(
+    "SELECT id, user_id, amount, tariff_days FROM payments WHERE code = ? AND status = 'pending' ORDER BY id DESC LIMIT 1"
+  ).bind(code).first();
+  if (!payment) {
+    console.log("[MONO]", { tx: txId, code, skip: "no pending payment" });
+    return;
+  }
+  // item.amount у копійках, payment.amount у грн; переплату дозволяємо, недоплату — ні.
+  if (Number(item.amount) < Number(payment.amount) * 100) {
+    console.log("[MONO]", { tx: txId, code, skip: "amount too low", got: Number(item.amount), need: Number(payment.amount) * 100 });
+    return;
+  }
+  // Дедуп: той самий переказ не активує доступ двічі.
+  if (!(await claimMonoTx(env.DB, txId))) {
+    console.log("[MONO]", { tx: txId, skip: "already processed" });
+    return;
+  }
+  const targetUserId = String(payment.user_id);
+  const days = Number(payment.tariff_days);
+  const accessUntil = await grantAccess(env, targetUserId, days, "mono");
+  await env.DB.prepare("UPDATE payments SET status = 'paid', paid_at = ?, comment = ? WHERE id = ?")
+    .bind(kyivNow().datetime, `mono ${txId}`, payment.id).run();
+  await sendMessage(env, targetUserId, `Доступ відкрито 🚀\n\nДо: ${formatHumanDate(accessUntil)}`, MAIN_KEYBOARD, true);
+  console.log("[MONO]", { tx: txId, code, user_id: targetUserId, tariff_days: days, status: "auto-paid" });
+}
+
+function extractPaymentCode(comment) {
+  const match = /DG-[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{4}/i.exec(String(comment || ""));
+  return match ? match[0].toUpperCase() : null;
+}
+
+// Атомарний дедуп транзакцій: true — щойно застовпили; false — вже було (або таблиці нема).
+async function claimMonoTx(db, txId) {
+  try {
+    const result = await db.prepare(
+      "INSERT OR IGNORE INTO mono_processed (tx_id, processed_at) VALUES (?, ?)"
+    ).bind(String(txId), kyivNow().datetime).run();
+    return Number(result.meta?.changes || 0) > 0;
+  } catch (error) {
+    // Без таблиці не ризикуємо подвійним грантом — краще пропустити (адмін підтвердить вручну).
+    console.log("[MONO_ERROR]", { action: "claim_tx", error: String(error) });
+    return false;
+  }
+}
+
+// Throttle пуллів до 1/60с (ліміт mono statement — 429 при частіших запитах).
+async function claimMonoPoll(db) {
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    const row = await db.prepare("SELECT last_pull_at FROM mono_poll WHERE id = 1").first();
+    if (row && Number(row.last_pull_at) > now - 60) return false;
+    await db.prepare(
+      "INSERT INTO mono_poll (id, last_pull_at) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET last_pull_at = excluded.last_pull_at"
+    ).bind(now).run();
+    return true;
+  } catch (error) {
+    console.log("[MONO_ERROR]", { action: "claim_poll", error: String(error) });
+    return false;
+  }
+}
+
+async function cleanupMonoProcessed(db) {
+  try {
+    const cutoff = `${formatDate(addDays(parseDate(kyivNow().date), -40))} 00:00:00`;
+    await db.prepare("DELETE FROM mono_processed WHERE processed_at < ?").bind(cutoff).run();
+  } catch (error) {
+    console.log("[CRON_ERROR]", { action: "cleanup_mono_processed", error: String(error) });
   }
 }
 
@@ -1196,12 +1450,100 @@ function isServiceTitle(title) {
   );
 }
 
+// Правило вирішення конфліктів: перемагає більша вага (бренд > фраза > корінь >
+// нечіткий збіг), при рівній вазі — довший збіг, далі — порядок категорій.
 function detectCategory(title) {
-  const value = String(title || "").toLowerCase();
-  for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
-    if (keywords.some((keyword) => value.includes(keyword))) return category;
+  const value = normalizeForMatch(title);
+  if (!value) return "other";
+
+  let best = null;
+  const consider = (category, rank, length) => {
+    if (!best || rank > best.rank || (rank === best.rank && length > best.length)) {
+      best = { category, rank, length };
+    }
+  };
+
+  for (const entry of PHRASE_ENTRIES) {
+    if (value.includes(entry.text)) consider(entry.category, entry.rank, entry.text.length);
   }
+
+  for (const token of value.split(" ")) {
+    if (!token) continue;
+    let matched = false;
+    // Найдовший префікс токена, що є коренем у словнику.
+    for (let length = token.length; length >= 2; length--) {
+      const hit = ROOT_INDEX.get(token.slice(0, length));
+      // exact-слова («газ», «бар») спрацьовують лише як ціле слово.
+      if (!hit || (hit.exactOnly && length !== token.length)) continue;
+      consider(hit.category, hit.rank, length);
+      matched = true;
+      break;
+    }
+    if (!matched && token.length > 5) {
+      const fuzzy = findFuzzyRoot(token);
+      if (fuzzy) consider(fuzzy.category, MATCH_RANK.fuzzy, fuzzy.length);
+    }
+  }
+
+  if (best) return best.category;
+  console.log("[UNKNOWN_CATEGORY]", title);
   return "other";
+}
+
+// Одруківки: шукаємо корінь на відстані Левенштейна 1, звіряючись лише з
+// коренями схожої довжини, а не з усім словником.
+function findFuzzyRoot(token) {
+  // Корінь порівнюємо з ПРЕФІКСОМ токена тієї ж (±1) довжини: «продкти» має
+  // збігтися з коренем «продукт» попри закінчення.
+  const maxLength = Math.min(token.length + 1, 14);
+  for (let length = maxLength; length >= 4; length--) {
+    const bucket = ROOTS_BY_LENGTH.get(length);
+    if (!bucket) continue;
+    const candidates = [token.slice(0, length), token.slice(0, length - 1)];
+    for (const root of bucket) {
+      for (const candidate of candidates) {
+        if (candidate.length < 4) continue;
+        if (isWithinOneEdit(candidate, root)) {
+          const hit = ROOT_INDEX.get(root);
+          if (hit) return { category: hit.category, length: root.length };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function isWithinOneEdit(a, b) {
+  if (a === b) return true;
+  const diff = a.length - b.length;
+  if (diff > 1 || diff < -1) return false;
+  // Перестановка сусідніх літер — найчастіша одруківка («шоколда»).
+  if (diff === 0) {
+    for (let k = 0; k < a.length - 1; k++) {
+      if (a[k] !== b[k]) {
+        return a[k] === b[k + 1] && a[k + 1] === b[k] && a.slice(k + 2) === b.slice(k + 2);
+      }
+    }
+  }
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    if (++edits > 1) return false;
+    if (a.length > b.length) i++;
+    else if (a.length < b.length) j++;
+    else {
+      i++;
+      j++;
+    }
+  }
+  if (i < a.length || j < b.length) edits++;
+  return edits <= 1;
 }
 
 function normalizeTitle(title) {
@@ -2007,7 +2349,7 @@ function quickCategoryKeyboard() {
       [{ text: "🍔 Їжа", callback_data: "quick_cat:food" }, { text: "🚕 Транспорт", callback_data: "quick_cat:transport" }],
       [{ text: "🛍 Покупки", callback_data: "quick_cat:shopping" }, { text: "🏠 Дім", callback_data: "quick_cat:home" }],
       [{ text: "💊 Здоров’я", callback_data: "quick_cat:health" }, { text: "👶 Діти", callback_data: "quick_cat:kids" }],
-      [{ text: "🎮 Розваги", callback_data: "quick_cat:fun" }],
+      [{ text: "📚 Навчання", callback_data: "quick_cat:education" }, { text: "🎮 Розваги", callback_data: "quick_cat:fun" }],
       [{ text: "⬅️ Назад", callback_data: "quick_categories_back" }]
     ]
   };
@@ -2084,12 +2426,16 @@ function hasActiveAccess(user) {
   return new Date(user.access_until.replace(" ", "T")).getTime() > Date.now();
 }
 
+// Оплата приймається лише на банку — тільки її поповнення емітить mono-webhook
+// (приват і mono-картку не показуємо).
+function jarPayLine(env) {
+  return env.MONO_JAR_LINK ? `Банка: ${env.MONO_JAR_LINK}` : "Банка: (посилання не задано)";
+}
+
 // Єдиний блок тарифів — використовується і в paywall, і в «Мій доступ»,
 // щоб не було двох різних версій тексту.
 function tariffBlock(env, pending) {
-  const payTarget = env.MONO_JAR_LINK
-    ? `Банка: ${env.MONO_JAR_LINK}`
-    : [`mono: ${env.MONO_CARD || "не задано"}`, `privat: ${env.PRIVAT_CARD || "не задано"}`].join("\n");
+  const payTarget = jarPayLine(env);
   const lines = [
     "💳 Тарифи:",
     ...TARIFFS.map((tariff) => `${tariff.price} грн — ${tariff.label}`),
@@ -2181,8 +2527,7 @@ function paymentText(env, tariff, code) {
   const lines = [
     "Для оплати:",
     "",
-    `mono: ${env.MONO_CARD || "не задано"}`,
-    `privat: ${env.PRIVAT_CARD || "не задано"}`,
+    jarPayLine(env),
     "",
     `Тариф: ${tariff.label} — ${tariff.price} грн`
   ];
